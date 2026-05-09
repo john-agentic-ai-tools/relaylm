@@ -31,7 +31,14 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- **TDD Compliance**: Test files MUST exist and be red (failing) before implementation begins
+- **Simplicity Review**: Architecture MUST NOT introduce unnecessary abstraction — justify
+    every component beyond a trivial threshold
+- **Python Standards**: Project MUST use pyproject.toml, type hints on public APIs,
+    and pass ruff + mypy checks
+- **Packaging Ready**: Deliverables MUST be pip-installable via pyproject.toml entry points
+- **Quality Gates**: Integration tests required for contract changes; linting and type
+    checking gates enforced
 
 ## Project Structure
 

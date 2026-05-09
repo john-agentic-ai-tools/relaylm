@@ -1,4 +1,5 @@
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+Current plan: specs/001-ai-router-setup/plan.md
+Additional context: specs/001-ai-router-setup/research.md, specs/001-ai-router-setup/data-model.md,
+specs/001-ai-router-setup/quickstart.md, specs/001-ai-router-setup/contracts/
 <!-- SPECKIT END -->
