@@ -1,5 +1,5 @@
 <!-- SPECKIT START -->
-Current plan: specs/001-ai-router-setup/plan.md
-Additional context: specs/001-ai-router-setup/research.md, specs/001-ai-router-setup/data-model.md,
-specs/001-ai-router-setup/quickstart.md, specs/001-ai-router-setup/contracts/
+Current plan: specs/002-comprehensive-docs/plan.md
+Additional context: specs/002-comprehensive-docs/research.md, specs/002-comprehensive-docs/data-model.md,
+specs/002-comprehensive-docs/quickstart.md, specs/002-comprehensive-docs/contracts/
 <!-- SPECKIT END -->
