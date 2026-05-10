@@ -1,5 +1,6 @@
 """Verify that CLI commands/flags in docs match actual relaylm --help output."""
 
+import os
 import re
 import subprocess
 import sys
@@ -36,12 +37,22 @@ def extract_cli_commands(help_text: str) -> set[str]:
 
 
 def get_cli_help() -> str:
+    env_cmd = os.environ.get("RELAYLM_HELP_CMD")
+    if env_cmd:
+        cmd = [env_cmd]
+    else:
+        cmd = [sys.executable, "-m", "relaylm"]
+
     result = subprocess.run(
-        [sys.executable, "-m", "relaylm", "--help"],
+        [*cmd, "--help"],
         capture_output=True,
         text=True,
         timeout=30,
     )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"relaylm --help failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
     return result.stdout
 
 
@@ -84,11 +95,14 @@ def main() -> int:
 
     try:
         help_text = get_cli_help()
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, RuntimeError) as e:
         print(f"Failed to get CLI help: {e}", file=sys.stderr)
         return 1
 
     known_commands = extract_cli_commands(help_text)
+    if not known_commands:
+        print("Error: no commands extracted from relaylm --help", file=sys.stderr)
+        return 1
 
     all_errors: list[str] = []
     for doc_file in doc_files:
