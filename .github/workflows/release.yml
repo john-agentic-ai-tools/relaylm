@@ -115,16 +115,13 @@ jobs:
           pip install ".[dev]"
       - name: Install docs tools
         run: |
-          pip install markdownlint-cli codespell
+          pip install pymarkdownlnt codespell
       - name: Run markdownlint
-        run: markdownlint README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
-        continue-on-error: true
+        run: pymarkdownlnt --config .pymarkdownlnt.yml scan README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
       - name: Run spell check
         run: codespell --skip=".git,.venv,specs,__pycache__" README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
-        continue-on-error: true
       - name: Run docs sync check
         run: python scripts/check_docs_sync.py README.md docs/guide.md docs/config.md
-        continue-on-error: true
 
   publish:
     name: Publish to PyPI

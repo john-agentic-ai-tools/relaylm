@@ -27,8 +27,8 @@ rules:
 
   - id: hardcoded-secret
     patterns:
-      - pattern-regex: (password|secret|token|api_key|apikey)\s*[:=]\s*["\'][^"\']+["\']
-      - pattern-not: "(password|secret|token|api_key|apikey)\s*[:=]\s*[\"']<.*>[\"']"
+      - pattern-regex: '(password|secret|token|api_key|apikey)\s*[:=]\s*["''][^"'']+["'']'
+      - pattern-not-regex: '(password|secret|token|api_key|apikey)\s*[:=]\s*["'']<[^"'']*>["'']'
     message: "Possible hardcoded secret found"
     languages: [python]
     severity: ERROR
