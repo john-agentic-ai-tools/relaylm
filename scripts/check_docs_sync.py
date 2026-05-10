@@ -53,6 +53,11 @@ def get_cli_help() -> str:
         raise RuntimeError(
             f"relaylm --help failed (exit {result.returncode}): {result.stderr.strip()}"
         )
+    if not result.stdout.strip():
+        stderr_hint = result.stderr.strip() or "(none)"
+        raise RuntimeError(
+            f"relaylm --help exited 0 but stdout was empty, stderr: {stderr_hint}"
+        )
     return result.stdout
 
 
@@ -102,6 +107,8 @@ def main() -> int:
     known_commands = extract_cli_commands(help_text)
     if not known_commands:
         print("Error: no commands extracted from relaylm --help", file=sys.stderr)
+        print(f"  stdout length: {len(help_text)}", file=sys.stderr)
+        print(f"  stdout preview: {help_text[:500]!r}", file=sys.stderr)
         return 1
 
     all_errors: list[str] = []
