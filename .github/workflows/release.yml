@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.VERSION }}
+      status: ${{ steps.check.outputs.STATUS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Check version against PyPI
+        id: check
+        run: |
+          python scripts/check_version.py > /tmp/version_output.txt 2>&1
+          cat /tmp/version_output.txt
+          while IFS== read -r key value; do
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done < /tmp/version_output.txt
+      - name: Fail if version exists
+        if: steps.check.outputs.STATUS == 'exists' || steps.check.outputs.STATUS == 'error'
+        run: |
+          echo "::error::Version check failed: STATUS=${{ steps.check.outputs.STATUS }}, VERSION=${{ steps.check.outputs.VERSION }}"
+          exit 1
+
+  lint:
+    name: "Gate: Lint"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+      - name: Run ruff linting
+        run: ruff check src/ tests/
+
+  security:
+    name: "Gate: Security"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install semgrep
+        run: pip install semgrep
+      - name: Run semgrep scan
+        run: semgrep --config=.semgrep/semgrep.yml src/
+
+  deps:
+    name: "Gate: Dependencies"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+      - name: Audit dependencies
+        run: |
+          pip install pip-audit
+          pip-audit
+
+  tests:
+    name: "Gate: Tests"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+      - name: Run pytest
+        run: pytest --cov=src/ --cov-report=term-missing
+
+  docs:
+    name: "Gate: Docs"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+      - name: Install docs tools
+        run: |
+          pip install markdownlint-cli codespell
+      - name: Run markdownlint
+        run: markdownlint README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+        continue-on-error: true
+      - name: Run spell check
+        run: codespell --skip=".git,.venv,specs,__pycache__" README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+        continue-on-error: true
+      - name: Run docs sync check
+        run: python scripts/check_docs_sync.py README.md docs/guide.md docs/config.md
+        continue-on-error: true
+
+  publish:
+    name: Publish to PyPI
+    needs: [lint, security, deps, tests, docs]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

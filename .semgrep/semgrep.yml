@@ -1,0 +1,74 @@
+rules:
+  - id: insecure-subprocess-shell-true
+    pattern: subprocess.$FUNC(..., shell=True, ...)
+    message: "Found subprocess with shell=True — possible command injection"
+    languages: [python]
+    severity: WARNING
+
+  - id: insecure-subprocess-with-shell
+    pattern: os.system(...)
+    message: "Found os.system() — prefer subprocess.run with shell=False"
+    languages: [python]
+    severity: WARNING
+
+  - id: dangerous-eval
+    pattern: eval(...)
+    message: "Found eval() — dangerous if used with untrusted input"
+    languages: [python]
+    severity: ERROR
+
+  - id: request-without-timeout
+    patterns:
+      - pattern: requests.$METHOD(...)
+      - pattern-not: requests.$METHOD(..., timeout=..., ...)
+    message: "Found requests call without timeout — may hang indefinitely"
+    languages: [python]
+    severity: WARNING
+
+  - id: hardcoded-secret
+    patterns:
+      - pattern-regex: (password|secret|token|api_key|apikey)\s*[:=]\s*["\'][^"\']+["\']
+      - pattern-not: "(password|secret|token|api_key|apikey)\s*[:=]\s*[\"']<.*>[\"']"
+    message: "Possible hardcoded secret found"
+    languages: [python]
+    severity: ERROR
+
+  - id: sql-injection
+    patterns:
+      - pattern: |
+          cursor.execute($QUERY % ...)
+      - pattern: |
+          cursor.execute(f"...")
+    message: "Possible SQL injection — use parameterized queries"
+    languages: [python]
+    severity: ERROR
+
+  - id: pickle-deserialization
+    pattern: pickle.loads(...)
+    message: "Found pickle deserialization — unsafe with untrusted data"
+    languages: [python]
+    severity: ERROR
+
+  - id: yaml-load-without-loader
+    patterns:
+      - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=...)
+    message: "yaml.load() without Loader is unsafe — use yaml.safe_load()"
+    languages: [python]
+    severity: WARNING
+
+  - id: assert-statement
+    pattern: assert ...
+    message: "Assert statement found — assertions are disabled with -O flag"
+    languages: [python]
+    severity: WARNING
+
+  - id: debug-mode-in-production
+    patterns:
+      - pattern: |
+          app.run(..., debug=True, ...)
+      - pattern: |
+          uvicorn.run(..., debug=True, ...)
+    message: "Debug mode enabled in production — should be False"
+    languages: [python]
+    severity: ERROR
