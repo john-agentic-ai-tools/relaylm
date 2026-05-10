@@ -23,7 +23,7 @@ jobs:
       - name: Install Python
         run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
       - name: Run ruff linting
         run: ruff check src/ tests/
 
@@ -39,7 +39,7 @@ jobs:
       - name: Install Python
         run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Install semgrep
-        run: uv pip install semgrep
+        run: uv pip install --system semgrep
       - name: Run semgrep scan
         run: semgrep --config=.semgrep/semgrep.yml src/
 
@@ -55,10 +55,10 @@ jobs:
       - name: Install Python
         run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Install project
-        run: uv pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
       - name: Audit dependencies
         run: |
-          uv pip install pip-audit
+          uv pip install --system pip-audit
           pip-audit
 
   tests:
@@ -73,7 +73,7 @@ jobs:
       - name: Install Python
         run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
       - name: Run pytest
         run: pytest --cov=src/ --cov-report=term-missing
 
@@ -89,10 +89,10 @@ jobs:
       - name: Install Python
         run: uv python install ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install ".[dev]"
+        run: uv pip install --system ".[dev]"
       - name: Install docs tools
         run: |
-          uv pip install pymarkdownlnt codespell
+          uv pip install --system pymarkdownlnt codespell
       - name: Run markdownlint
         run: pymarkdownlnt --config .pymarkdownlnt.yml scan README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
       - name: Run spell check
