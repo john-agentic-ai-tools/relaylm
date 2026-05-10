@@ -23,12 +23,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Check version against PyPI
         id: check
         run: |
-          python scripts/check_version.py > /tmp/version_output.txt 2>&1
+          uv run python scripts/check_version.py > /tmp/version_output.txt 2>&1
           cat /tmp/version_output.txt
           while IFS== read -r key value; do
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -49,12 +49,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install ".[dev]"
       - name: Run ruff linting
-        run: ruff check src/ tests/
+        run: uv run ruff check src/ tests/
 
   security:
     name: "Gate: Security"
@@ -66,12 +66,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install semgrep
-        run: uv pip install --system semgrep
+        run: uv pip install semgrep
       - name: Run semgrep scan
-        run: semgrep --config=.semgrep/semgrep.yml src/
+        run: uv run semgrep --config=.semgrep/semgrep.yml src/
 
   deps:
     name: "Gate: Dependencies"
@@ -83,14 +83,14 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install project
-        run: uv pip install --system ".[dev]"
+        run: uv pip install ".[dev]"
       - name: Audit dependencies
         run: |
-          uv pip install --system pip-audit
-          pip-audit
+          uv pip install pip-audit
+          uv run pip-audit
 
   tests:
     name: "Gate: Tests"
@@ -102,12 +102,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install ".[dev]"
       - name: Run pytest
-        run: pytest --cov=src/ --cov-report=term-missing
+        run: uv run pytest --cov=src/ --cov-report=term-missing
 
   docs:
     name: "Gate: Docs"
@@ -119,19 +119,19 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
         with:
           enable-cache: true
-      - name: Install Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install ".[dev]"
       - name: Install docs tools
         run: |
-          uv pip install --system pymarkdownlnt codespell
+          uv pip install pymarkdownlnt codespell
       - name: Run markdownlint
-        run: pymarkdownlnt --config .pymarkdownlnt.yml scan README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+        run: uv run pymarkdownlnt --config .pymarkdownlnt.yml scan README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
       - name: Run spell check
-        run: codespell --skip=".git,.venv,specs,__pycache__" README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+        run: uv run codespell --skip=".git,.venv,specs,__pycache__" README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
       - name: Run docs sync check
-        run: python scripts/check_docs_sync.py README.md docs/guide.md docs/config.md
+        run: uv run python scripts/check_docs_sync.py README.md docs/guide.md docs/config.md
 
   publish:
     name: Publish to PyPI
