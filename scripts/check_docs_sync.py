@@ -58,7 +58,9 @@ def get_cli_help() -> str:
         raise RuntimeError(
             f"relaylm --help exited 0 but stdout was empty, stderr: {stderr_hint}"
         )
-    return result.stdout
+    # Strip ANSI escape codes — CI runners emit them via pseudo-TTY
+    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", result.stdout)
+    return clean
 
 
 def find_flag_references(filepath: str, content: str) -> list[DocReference]:
@@ -107,8 +109,11 @@ def main() -> int:
     known_commands = extract_cli_commands(help_text)
     if not known_commands:
         print("Error: no commands extracted from relaylm --help", file=sys.stderr)
-        print(f"  stdout length: {len(help_text)}", file=sys.stderr)
-        print(f"  stdout preview: {help_text[:500]!r}", file=sys.stderr)
+        has_ansi = "\x1b[" in help_text
+        print(
+            f"  (stdout length: {len(help_text)}, has ANSI: {has_ansi})",
+            file=sys.stderr,
+        )
         return 1
 
     all_errors: list[str] = []
