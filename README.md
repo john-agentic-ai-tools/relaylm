@@ -2,9 +2,10 @@
   <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/python-3.11+-blue?style=flat&logo=python&logoColor=white&labelColor=333">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11+-blue?style=flat&logo=python&logoColor=white&labelColor=333">
 </picture>
-![MIT License](https://img.shields.io/badge/license-MIT-green)
-[![Ruff](https://img.shields.io/badge/code%20style-ruff-000000)](https://github.com/astral-sh/ruff)
-[![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue)](https://github.com/python/mypy)
+
+![MIT License](https://img.shields.io/badge/license-MIT-green?style=flat)
+[![Ruff](https://img.shields.io/badge/code_style-ruff-000000?style=flat)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://img.shields.io/badge/mypy-checked-blue?style=flat)](https://github.com/python/mypy)
 
 # RelayLM
 
