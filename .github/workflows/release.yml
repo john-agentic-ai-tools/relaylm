@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.VERSION }}
+      status: ${{ steps.check.outputs.STATUS }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Check version against PyPI
+        id: check
+        run: |
+          uv run python scripts/check_version.py > /tmp/version_output.txt 2>&1
+          cat /tmp/version_output.txt
+          while IFS== read -r key value; do
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done < /tmp/version_output.txt
+      - name: Fail if version exists
+        if: steps.check.outputs.STATUS == 'exists' || steps.check.outputs.STATUS == 'error'
+        run: |
+          echo "::error::Version check failed: STATUS=${{ steps.check.outputs.STATUS }}, VERSION=${{ steps.check.outputs.VERSION }}"
+          exit 1
+
+  lint:
+    name: "Gate: Lint"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: uv pip install ".[dev]"
+      - name: Run ruff linting
+        run: uv run ruff check src/ tests/
+
+  security:
+    name: "Gate: Security"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Install semgrep
+        run: uv pip install semgrep
+      - name: Run semgrep scan
+        run: uv run semgrep --config=.semgrep/semgrep.yml src/
+
+  deps:
+    name: "Gate: Dependencies"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Install project
+        run: uv pip install ".[dev]"
+      - name: Audit dependencies
+        run: |
+          uv pip install pip-audit
+          uv run pip-audit
+
+  tests:
+    name: "Gate: Tests"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: uv pip install ".[dev]"
+      - name: Run pytest
+        run: uv run pytest --cov=src/ --cov-report=term-missing
+
+  docs:
+    name: "Gate: Docs"
+    needs: [version-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Create virtual environment
+        run: uv venv --python ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: uv pip install ".[dev]"
+      - name: Install docs tools
+        run: |
+          uv pip install pymarkdownlnt codespell
+      - name: Run markdownlint
+        run: uv run pymarkdownlnt --config .pymarkdownlnt.yml scan README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+      - name: Run spell check
+        run: uv run codespell --skip=".git,.venv,specs,__pycache__" README.md docs/ CONTRIBUTING.md CODE_OF_CONDUCT.md
+      - name: Run docs sync check
+        run: uv run python scripts/check_docs_sync.py README.md docs/guide.md docs/config.md
+
+  publish:
+    name: Publish to PyPI
+    needs: [lint, security, deps, tests, docs]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+      - name: Build package
+        run: uv build --no-sources
+      - name: Smoke test (wheel)
+        run: uv run --isolated --no-project --with dist/*.whl python -m pytest tests/smoke_test.py -x -q
+      - name: Smoke test (source distribution)
+        run: uv run --isolated --no-project --with dist/*.tar.gz python -m pytest tests/smoke_test.py -x -q
+      - name: Publish to PyPI
+        run: uv publish

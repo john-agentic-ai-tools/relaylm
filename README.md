@@ -42,6 +42,7 @@ relaylm setup --yes
 ```
 
 This will:
+
 1. Detect your hardware (RAM, CPU cores, GPU)
 2. Select models appropriate for your system
 3. Pull and start a vLLM container with the selected models

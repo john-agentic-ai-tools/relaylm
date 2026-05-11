@@ -152,6 +152,7 @@ relaylm setup --yes
 ```
 
 This runs in non-interactive mode and:
+
 1. Detects your hardware (RAM, CPU, GPU)
 2. Selects models appropriate for your system
 3. Pulls the vLLM Docker image
@@ -238,7 +239,7 @@ relaylm providers list-cmd
 
 Example output:
 
-```
+```text
 anthropic: enabled=True, key set
 openai: enabled=True, no key
 ```
@@ -302,7 +303,7 @@ relaylm config path
 
 Example output:
 
-```
+```text
 /home/you/.config/relaylm/config.yml
 ```
 
@@ -310,7 +311,7 @@ Example output:
 
 RelayLM automatically creates timestamped backups before modifying the configuration. Backups are stored in:
 
-```
+```text
 ~/.config/relaylm/backups/config-{timestamp}.yml
 ```
 
@@ -396,11 +397,13 @@ relaylm setup --port 8080
 **Error**: `Failed to start vLLM container` or container exits immediately.
 
 **Possible causes**:
+
 - Insufficient disk space for model download
 - Insufficient RAM/VRAM for the selected model
 - Container runtime permission issues
 
 **Solutions**:
+
 - Free up disk space
 - Use `--models` to select a smaller model
 - Run setup with `--runtime podman` or `--runtime docker` explicitly

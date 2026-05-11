@@ -4,7 +4,7 @@ RelayLM configuration is stored in `~/.config/relaylm/config.yml`. This file is 
 
 ## File Location
 
-```
+```text
 ~/.config/relaylm/config.yml
 ```
 
