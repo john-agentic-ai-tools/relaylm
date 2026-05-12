@@ -230,6 +230,58 @@ relaylm setup --runtime docker
 relaylm setup --port 8080
 ```
 
+### Hugging Face Token (optional)
+
+vLLM downloads model weights from the Hugging Face Hub. Anonymous downloads
+are rate-limited; setting a token enables faster, rate-limit-free downloads
+and access to gated models (e.g. some Llama and Mistral releases).
+
+1. **Create a Hugging Face account** at
+   [https://huggingface.co/join](https://huggingface.co/join).
+2. **Generate an access token**: open
+   [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens),
+   click "Create new token", choose the **Read** role (sufficient for
+   downloads), give it a name (e.g. `relaylm`), and copy the value — it
+   starts with `hf_`.
+3. **Set the `HF_TOKEN` environment variable** in the shell where you'll
+   run `relaylm setup`:
+
+   - **Linux / macOS / WSL2** (bash or zsh):
+
+     ```bash
+     export HF_TOKEN=hf_xxx...
+     # Persist across shells:
+     echo 'export HF_TOKEN=hf_xxx...' >> ~/.bashrc
+     ```
+
+   - **Windows PowerShell** (only relevant if you ever run RelayLM
+     natively on Windows — currently unsupported, see WSL2 above):
+
+     ```powershell
+     $env:HF_TOKEN = "hf_xxx..."
+     # Persist (new shells only):
+     setx HF_TOKEN "hf_xxx..."
+     ```
+
+   On WSL2, set the variable **inside the distro**, not in PowerShell —
+   `relaylm setup` runs inside WSL2, and PowerShell env vars do not
+   propagate unless `WSLENV` is configured.
+
+4. **Run `relaylm setup`** — the token is forwarded to the vLLM container
+   automatically. If you omit `--yes`, you will be prompted interactively
+   if the env var is not set.
+
+**Gated models**: for models behind a license agreement (e.g.
+`meta-llama/...`), visit the model's page on Hugging Face and accept the
+license while signed in. The token alone is not enough.
+
+**Security**: tokens grant read access to your Hugging Face account; treat
+them like passwords. The token is exposed in the container's environment
+(visible via `docker inspect`), so use a dedicated read-only token rather
+than your account's full-access one. Revoke at
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+if it leaks.
+
 ---
 
 ## Provider Configuration

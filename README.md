@@ -18,6 +18,7 @@ RelayLM auto-detects your hardware (RAM, CPU, GPU), selects appropriate models f
 - **Python 3.11** or later
 - **Podman** or **Docker** (container runtime)
 - **Windows users**: install inside a WSL2 distro — see [Running on Windows (WSL2)](docs/guide.md#windows-wsl2).
+- *(Optional)* Set `HF_TOKEN` for faster, rate-limit-free model downloads — see [Hugging Face Token](docs/guide.md#hugging-face-token-optional).
 
 ## Install
 

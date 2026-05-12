@@ -1,3 +1,7 @@
+import subprocess
+from unittest.mock import MagicMock, patch
+
+from relaylm.hardware import detector
 from relaylm.hardware.detector import HardwareProfile, _read_cpu_cores, _read_meminfo
 
 
@@ -43,3 +47,64 @@ class TestReadCpuCores:
         result = _read_cpu_cores()
         assert isinstance(result, int)
         assert result > 0
+
+
+class TestNvidiaSmiPath:
+    def test_returns_path_lookup_when_present(self) -> None:
+        with patch("shutil.which", return_value="/usr/bin/nvidia-smi"):
+            assert detector._nvidia_smi_path() == "/usr/bin/nvidia-smi"
+
+    def test_falls_back_to_wsl_path_when_present(self) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            assert detector._nvidia_smi_path() == detector._WSL_NVIDIA_SMI
+
+    def test_returns_none_when_both_missing(self) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            patch("pathlib.Path.exists", return_value=False),
+        ):
+            assert detector._nvidia_smi_path() is None
+
+
+class TestDetectNvidiaGpu:
+    def test_returns_false_when_no_binary(self) -> None:
+        with patch.object(detector, "_nvidia_smi_path", return_value=None):
+            assert detector._detect_nvidia_gpu() == (False, [])
+
+    def test_parses_vram_when_binary_found(self) -> None:
+        completed = MagicMock(returncode=0, stdout="8192\n", stderr="")
+        with (
+            patch.object(
+                detector, "_nvidia_smi_path", return_value="/usr/bin/nvidia-smi"
+            ),
+            patch("subprocess.run", return_value=completed) as run,
+        ):
+            assert detector._detect_nvidia_gpu() == (True, [8.0])
+        cmd = run.call_args.args[0]
+        assert cmd[0] == "/usr/bin/nvidia-smi"
+
+    def test_uses_wsl_binary_when_resolved(self) -> None:
+        completed = MagicMock(returncode=0, stdout="8192\n", stderr="")
+        with (
+            patch.object(
+                detector, "_nvidia_smi_path", return_value=detector._WSL_NVIDIA_SMI
+            ),
+            patch("subprocess.run", return_value=completed) as run,
+        ):
+            detector._detect_nvidia_gpu()
+        assert run.call_args.args[0][0] == detector._WSL_NVIDIA_SMI
+
+    def test_returns_false_when_binary_present_but_call_fails(self) -> None:
+        with (
+            patch.object(
+                detector, "_nvidia_smi_path", return_value=detector._WSL_NVIDIA_SMI
+            ),
+            patch(
+                "subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10),
+            ),
+        ):
+            assert detector._detect_nvidia_gpu() == (False, [])

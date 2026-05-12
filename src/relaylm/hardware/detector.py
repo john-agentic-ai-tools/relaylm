@@ -1,5 +1,23 @@
 import os
+import shutil
 import subprocess
+from pathlib import Path
+
+_WSL_NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
+
+
+def _nvidia_smi_path() -> str | None:
+    """Locate nvidia-smi, preferring PATH and falling back to the WSL2 location.
+
+    WSL2 with the Windows-side NVIDIA CUDA driver exposes nvidia-smi at
+    /usr/lib/wsl/lib/nvidia-smi, but distros don't always add it to PATH.
+    """
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    if Path(_WSL_NVIDIA_SMI).exists():
+        return _WSL_NVIDIA_SMI
+    return None
 
 
 class HardwareProfile:
@@ -57,10 +75,13 @@ def _read_cpu_cores() -> int:
 
 
 def _detect_nvidia_gpu() -> tuple[bool, list[float]]:
+    binary = _nvidia_smi_path()
+    if binary is None:
+        return (False, [])
     try:
         result = subprocess.run(
             [
-                "nvidia-smi",
+                binary,
                 "--query-gpu=memory.total",
                 "--format=csv,noheader,nounits",
             ],

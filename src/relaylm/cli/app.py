@@ -1,4 +1,7 @@
 import getpass
+import os
+import sys
+import time
 from typing import Any
 
 import typer
@@ -8,6 +11,40 @@ app = typer.Typer(
     help="Single-command AI router environment bootstrap",
     no_args_is_help=True,
 )
+
+
+_PROGRESS_THROTTLE_SECONDS = 5.0
+_WAIT_LOG_MAX_CHARS = 90
+_last_progress_emit = 0.0
+
+
+def _print_pull_progress(done: int, total: int, elapsed: float) -> None:
+    global _last_progress_emit
+    mins, secs = divmod(int(elapsed), 60)
+    total_str = str(total) if total else "?"
+    msg = f"  Pulling layers: {done}/{total_str} (elapsed {mins}m{secs:02d}s)"
+    if sys.stdout.isatty():
+        typer.echo(f"\r{msg}", nl=False)
+        return
+    if elapsed - _last_progress_emit >= _PROGRESS_THROTTLE_SECONDS:
+        typer.echo(msg)
+        _last_progress_emit = elapsed
+
+
+def _print_wait_progress(elapsed: float, last_log: str | None) -> None:
+    global _last_progress_emit
+    mins, secs = divmod(int(elapsed), 60)
+    snippet = (last_log or "starting up...").strip()
+    if len(snippet) > _WAIT_LOG_MAX_CHARS:
+        snippet = snippet[: _WAIT_LOG_MAX_CHARS - 1] + "…"
+    msg = f"  Waiting for vLLM ({mins}m{secs:02d}s) | {snippet}"
+    if sys.stdout.isatty():
+        typer.echo(f"\r\033[K{msg}", nl=False)
+        return
+    if elapsed - _last_progress_emit >= _PROGRESS_THROTTLE_SECONDS:
+        typer.echo(msg)
+        _last_progress_emit = elapsed
+
 
 providers_app = typer.Typer(help="Manage external AI providers")
 config_app = typer.Typer(help="Manage RelayLM configuration")
@@ -89,13 +126,102 @@ def setup(
 
     typer.echo(f"Using container runtime: {rt}")
 
-    from relaylm.container.vllm import VLLMManager
+    from relaylm.container.vllm import VLLM_IMAGE, VLLMManager
 
     manager = VLLMManager(runtime=rt)
     use_gpu = hardware.has_nvidia_gpu or hardware.has_amd_gpu
-    container_id = manager.deploy([m["name"] for m in selected_models], gpu=use_gpu)
-    typer.echo(f"vLLM container started: {container_id}")
-    typer.echo(f"Router endpoint: {manager.endpoint_url}")
+
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token and not yes:
+        typer.echo(
+            "Hugging Face token not set. A token enables higher download "
+            "rate limits and access to gated models "
+            "(see https://huggingface.co/settings/tokens). Press Enter to skip."
+        )
+        entered = getpass.getpass("HF_TOKEN (hidden, optional): ").strip()
+        hf_token = entered or None
+    if hf_token:
+        typer.echo("Using HF_TOKEN for Hugging Face authentication.")
+    else:
+        typer.echo(
+            "No HF_TOKEN set — downloads will be unauthenticated and rate-limited. "
+            "Set HF_TOKEN in your environment to authenticate."
+        )
+
+    typer.echo("Checking for existing vLLM container...")
+
+    def _confirm(prompt: str) -> bool:
+        return typer.confirm(prompt, default=False)
+
+    global _last_progress_emit
+
+    def _pull_progress(done: int, total: int, elapsed: float) -> None:
+        # The first time we get a progress callback, announce the pull.
+        global _last_progress_emit
+        if _last_progress_emit == 0.0 and elapsed < 1.0:
+            typer.echo(
+                f"Pulling vLLM image ({VLLM_IMAGE}, ~10 GB). "
+                "First pull can take 10-30 minutes depending on your connection."
+            )
+        _print_pull_progress(done, total, elapsed)
+
+    _last_progress_emit = 0.0
+    try:
+        container_id, reused = manager.reconcile(
+            model_names=[m["name"] for m in selected_models],
+            gpu=use_gpu,
+            hf_token=hf_token,
+            assume_yes=yes,
+            confirm=_confirm,
+            on_pull_progress=_pull_progress,
+        )
+    except RuntimeError as exc:
+        if sys.stdout.isatty():
+            typer.echo("")
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if sys.stdout.isatty() and _last_progress_emit != 0.0:
+        typer.echo("")
+
+    if reused:
+        typer.echo(f"Reusing existing vLLM container: {container_id}")
+    else:
+        typer.echo(f"vLLM container started: {container_id}")
+
+    from relaylm.container.runtime import container_status
+
+    typer.echo(
+        "Waiting for vLLM to load models (this can take 5-15 minutes on first run)..."
+    )
+    _last_progress_emit = 0.0
+    ready_start = time.monotonic()
+    ready = manager.wait_until_ready(
+        timeout=900.0,
+        container_id=container_id,
+        on_tick=_print_wait_progress,
+    )
+    if sys.stdout.isatty():
+        typer.echo("")
+    if not ready:
+        status = container_status(rt, container_id)
+        if status in ("exited", "dead"):
+            typer.echo(
+                f"vLLM container exited during startup (status: {status}). "
+                f"Check logs: `{rt} logs {container_id}`",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"Router did not become ready within 15 minutes. "
+                f"Check container logs: `{rt} logs {container_id}`",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+    ready_elapsed = int(time.monotonic() - ready_start)
+    typer.echo(
+        f"Router ready at {manager.endpoint_url} "
+        f"(took {ready_elapsed // 60}m{ready_elapsed % 60:02d}s)"
+    )
 
     from relaylm.agents.detector import detect_and_configure_agents
 
