@@ -37,9 +37,20 @@ def setup(
     from relaylm.container.runtime import detect_runtime
     from relaylm.hardware.detector import detect
     from relaylm.models.selector import select_models, validate_models
+    from relaylm.platform import is_wsl2, wsl_distro_name
+
+    on_wsl2 = is_wsl2()
+    if on_wsl2:
+        typer.echo(f"Detected WSL2 distro: {wsl_distro_name() or 'unknown'}")
 
     hardware = detect()
     typer.echo(f"Detected hardware: {hardware}")
+    if on_wsl2 and not hardware.has_nvidia_gpu:
+        typer.echo(
+            "Note: no NVIDIA GPU detected under WSL2. If you have an NVIDIA GPU, "
+            "install the Windows-side NVIDIA CUDA on WSL driver and verify "
+            "`nvidia-smi` works inside this distro."
+        )
 
     if models:
         model_list = [m.strip() for m in models.split(",")]
@@ -58,12 +69,19 @@ def setup(
 
     rt = runtime or detect_runtime()
     if rt is None:
+        wsl_hint = (
+            " On WSL2: enable Docker Desktop's WSL integration for this distro, "
+            "or run `sudo apt install podman` inside the distro."
+            if on_wsl2
+            else ""
+        )
         if yes:
             typer.echo(
-                "No container runtime found. Install Podman: https://podman.io/docs/installation"
+                "No container runtime found. Install Podman: "
+                "https://podman.io/docs/installation" + wsl_hint
             )
             raise typer.Exit(code=1)
-        typer.echo("No container runtime detected.")
+        typer.echo("No container runtime detected." + wsl_hint)
         if typer.confirm("Install Podman now?"):
             typer.echo("Installing Podman... (platform-specific)")
         else:

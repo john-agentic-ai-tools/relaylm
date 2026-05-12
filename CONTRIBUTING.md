@@ -30,6 +30,15 @@ Thank you for your interest in contributing to RelayLM! This guide will help you
    relaylm --help
    ```
 
+### Developing on Windows (WSL2)
+
+Use a WSL2 Ubuntu (or compatible) distro. Clone the repo into the Linux
+filesystem (`~/code/relaylm`) — not under `/mnt/c/...` — to avoid slow
+cross-filesystem I/O. From there the `uv`, `pytest`, `ruff`, and `mypy`
+commands below work exactly as on Linux. See
+[Running on Windows (WSL2)](docs/guide.md#windows-wsl2) for prerequisite
+setup.
+
 ## Running Tests
 
 ```bash
