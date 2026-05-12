@@ -229,7 +229,7 @@ what auto-detection would have selected.
 
 - The router runtime (RelayLM proxy/server) — this tool only configures it
 - Model training, fine-tuning, or custom model development
-- Native Windows support (WSL2 is accepted)
+- Native Windows Python support (WSL2 is the supported path on Windows)
 - GUI or web dashboard — CLI only
 - Cloud deployment or remote server orchestration
 - Multi-node / cluster / Kubernetes setups
@@ -238,7 +238,7 @@ what auto-detection would have selected.
 
 ## Assumptions
 
-- Developers are on Linux or macOS (Windows support via WSL2 is acceptable).
+- Developers are on Linux, macOS, or Windows via WSL2.
 - Developers have sudo or equivalent access for container runtime setup.
 - Developers have an internet connection for pulling container images and
   model weights on first run.

@@ -49,6 +49,9 @@ nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits
 rocm-smi
 ```
 
+On WSL2, use the same Linux commands inside the distro. `nvidia-smi` works
+when the Windows-side NVIDIA CUDA on WSL driver is installed.
+
 ---
 
 ## Installation
@@ -78,6 +81,41 @@ relaylm --help
 ```
 
 You should see the list of available commands: `setup`, `agents`, `providers`, `config`.
+
+### Windows (WSL2)
+
+Native Windows Python is not supported. Install and run RelayLM inside a WSL2
+Linux distro on Windows 10 22H2+ or Windows 11.
+
+1. **Enable WSL2 and install Ubuntu** (Windows PowerShell, as administrator):
+
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+
+   Restart when prompted, then finish the Ubuntu first-run setup.
+
+2. **Install a container runtime**:
+
+   - *Recommended*: install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+     on Windows and enable WSL integration for your distro
+     (Settings → Resources → WSL Integration).
+   - *Alternative*: install Podman inside the distro: `sudo apt install podman`.
+
+3. **Install RelayLM inside the distro**:
+
+   ```bash
+   pip install relaylm
+   ```
+
+4. **GPU passthrough (optional)**: install the
+   [NVIDIA CUDA on WSL driver](https://developer.nvidia.com/cuda/wsl) **on the
+   Windows host** — do not install the Linux NVIDIA driver inside the distro.
+   Verify with `nvidia-smi` inside the distro.
+
+5. **Performance**: clone repositories into the Linux filesystem
+   (e.g. `~/code`), not under `/mnt/c/...` — cross-filesystem I/O is 5–10x
+   slower.
 
 ---
 

@@ -77,6 +77,26 @@ jobs:
       - name: Run pytest
         run: uv run pytest --cov=src/ --cov-report=term-missing
 
+  tests-wsl2:
+    name: "Gate: Tests (Windows WSL2)"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up WSL2 (Ubuntu 22.04)
+        uses: Vampire/setup-wsl@6c400b755bcd0583e60c2e7aa0cdc61794355c9b
+        with:
+          distribution: Ubuntu-22.04
+          additional-packages: python3 python3-pip python3-venv git curl ca-certificates
+      - name: Install uv and run unit tests inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv venv --python 3.11
+          uv pip install ".[dev]"
+          uv run --with pytest pytest tests/unit -q
+
   docs:
     name: "Gate: Docs"
     runs-on: ubuntu-latest
