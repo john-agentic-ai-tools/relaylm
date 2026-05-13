@@ -19,6 +19,7 @@ from relaylm.container.runtime import (
     stop_container,
     tail_logs,
 )
+from relaylm.models.registry import ModelSpec
 
 WaitTick = Callable[[float, str | None], None]
 ConfirmFn = Callable[[str], bool]
@@ -33,16 +34,108 @@ CONTAINER_PORT = 8000
 MANAGED_LABEL = "relaylm.managed"
 CONFIG_LABEL = "relaylm.config"
 
+# Tuning constants for auto-sized memory args.
+_UTIL_MIN = 0.70
+_UTIL_MAX = 0.95
+_UTIL_HEADROOM = 0.95  # use 95% of free / total ratio (never 100%)
+_MAX_MODEL_LEN_CAP = 8192  # hard ceiling so we don't reserve absurd KV space
+_DEFAULT_MAX_NUM_SEQS = 1
 
-def _build_vllm_args(model_names: list[str]) -> list[str]:
-    args = ["--model", model_names[0]]
-    for m in model_names[1:]:
-        args.extend(["--model", m])
-    # vLLM defaults to 0.92, which fails on 8 GB cards when the host has
-    # other GPU users (typical on WSL2 with a desktop session). 0.85 +
-    # eager mode leaves headroom and skips CUDA graph capture.
-    args.extend(["--gpu-memory-utilization", "0.85", "--enforce-eager"])
-    return args
+
+@dataclass
+class VLLMOverrides:
+    """Power-user overrides for the auto-computed memory args."""
+
+    gpu_memory_utilization: float | None = None
+    max_model_len: int | None = None
+    max_num_seqs: int | None = None
+
+
+@dataclass
+class ResolvedVLLMArgs:
+    """Result of `build_vllm_args` — the flags plus the inputs we used."""
+
+    args: list[str]
+    util: float
+    max_model_len: int
+    max_num_seqs: int
+    weights_gb: float
+    overhead_gb: float
+    kv_budget_gb: float
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def build_vllm_args(
+    specs: list[ModelSpec],
+    *,
+    total_vram_gb: float,
+    free_vram_gb: float,
+    overrides: VLLMOverrides | None = None,
+) -> ResolvedVLLMArgs:
+    """Compute vLLM CLI flags from selected model(s) + measured VRAM.
+
+    The primary model (specs[0]) drives the memory math; additional
+    models are loaded into the same budget at vLLM's discretion.
+    """
+    if not specs:
+        raise ValueError("build_vllm_args requires at least one ModelSpec")
+    overrides = overrides or VLLMOverrides()
+    primary = specs[0]
+
+    if overrides.gpu_memory_utilization is not None:
+        util = float(overrides.gpu_memory_utilization)
+    elif total_vram_gb > 0:
+        util = _clamp(
+            (free_vram_gb / total_vram_gb) * _UTIL_HEADROOM, _UTIL_MIN, _UTIL_MAX
+        )
+    else:
+        util = _UTIL_MIN
+    util = round(util, 2)
+
+    budget_gb = total_vram_gb * util
+    kv_budget_gb = max(0.0, budget_gb - primary.weights_gb - primary.overhead_gb)
+    if overrides.max_model_len is not None:
+        max_model_len = int(overrides.max_model_len)
+    elif primary.kv_bytes_per_token > 0 and kv_budget_gb > 0:
+        auto_len = int(kv_budget_gb * 1e9 / primary.kv_bytes_per_token)
+        max_model_len = min(auto_len, _MAX_MODEL_LEN_CAP)
+        # Floor to a sensible minimum so we either succeed or fall back early.
+        max_model_len = max(512, max_model_len)
+    else:
+        max_model_len = 2048
+
+    max_num_seqs = (
+        int(overrides.max_num_seqs)
+        if overrides.max_num_seqs is not None
+        else _DEFAULT_MAX_NUM_SEQS
+    )
+
+    args: list[str] = ["--model", primary.name]
+    for s in specs[1:]:
+        args.extend(["--model", s.name])
+    args.extend(
+        [
+            "--gpu-memory-utilization",
+            f"{util:.2f}",
+            "--max-model-len",
+            str(max_model_len),
+            "--max-num-seqs",
+            str(max_num_seqs),
+            "--enforce-eager",
+        ]
+    )
+    return ResolvedVLLMArgs(
+        args=args,
+        util=util,
+        max_model_len=max_model_len,
+        max_num_seqs=max_num_seqs,
+        weights_gb=primary.weights_gb,
+        overhead_gb=primary.overhead_gb,
+        kv_budget_gb=kv_budget_gb,
+    )
 
 
 def compute_config_signature(
@@ -106,22 +199,36 @@ class VLLMManager:
 
     def start_container(
         self,
-        model_names: list[str],
+        specs: list[ModelSpec],
+        *,
         gpu: bool = False,
+        total_vram_gb: float,
+        free_vram_gb: float,
+        overrides: VLLMOverrides | None = None,
         hf_token: str | None = None,
-    ) -> str:
-        """Launch the vLLM container (detached). Returns the container ID."""
+    ) -> tuple[str, ResolvedVLLMArgs]:
+        """Launch the vLLM container (detached).
+
+        Returns (container_id, resolved_args). `resolved_args` carries the
+        memory breakdown the CLI may want to echo.
+        """
         env = {"HF_HOME": "/root/.cache/huggingface"}
         if hf_token:
             env["HF_TOKEN"] = hf_token
         volume = f"{Path.home() / '.cache' / 'huggingface'}:/root/.cache/huggingface"
-        args = _build_vllm_args(model_names)
+        resolved = build_vllm_args(
+            specs,
+            total_vram_gb=total_vram_gb,
+            free_vram_gb=free_vram_gb,
+            overrides=overrides,
+        )
+        model_names = [s.name for s in specs]
         signature = compute_config_signature(
             model_names=model_names,
             gpu=gpu,
             port=LOCAL_PORT,
             image=self.image,
-            extra_args=args,
+            extra_args=resolved.args,
         )
         labels = {MANAGED_LABEL: "true", CONFIG_LABEL: signature}
 
@@ -132,7 +239,7 @@ class VLLMManager:
             volumes=[volume],
             gpu=gpu,
             env=env,
-            extra_args=args,
+            extra_args=resolved.args,
             labels=labels,
         )
         if result.returncode != 0:
@@ -141,7 +248,7 @@ class VLLMManager:
             )
         container_id = (result.stdout or "").strip()
         self.container_id = container_id
-        return container_id
+        return container_id, resolved
 
     def find_existing(self) -> list[ManagedContainer]:
         rows = list_managed_containers(self.runtime)
@@ -149,31 +256,39 @@ class VLLMManager:
 
     def reconcile(
         self,
-        model_names: list[str],
-        gpu: bool = False,
-        hf_token: str | None = None,
+        specs: list[ModelSpec],
         *,
+        gpu: bool = False,
+        total_vram_gb: float,
+        free_vram_gb: float,
+        overrides: VLLMOverrides | None = None,
+        hf_token: str | None = None,
         assume_yes: bool = False,
         confirm: ConfirmFn | None = None,
         on_pull_progress: PullProgress | None = None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, ResolvedVLLMArgs]:
         """Reuse a matching running container or stop+recreate.
 
-        Returns (container_id, reused). On reuse, image pull and container
-        creation are skipped entirely. On recreate, ensure_image runs and
-        the new container is started. Raises RuntimeError if the user
-        declines a needed recreate.
+        Returns (container_id, reused, resolved_args). On reuse, image
+        pull and container creation are skipped entirely. On recreate,
+        ensure_image runs and the new container is started. Raises
+        RuntimeError if the user declines a needed recreate.
         """
+        resolved = build_vllm_args(
+            specs,
+            total_vram_gb=total_vram_gb,
+            free_vram_gb=free_vram_gb,
+            overrides=overrides,
+        )
         desired_sig = compute_config_signature(
-            model_names=model_names,
+            model_names=[s.name for s in specs],
             gpu=gpu,
             port=LOCAL_PORT,
             image=self.image,
-            extra_args=_build_vllm_args(model_names),
+            extra_args=resolved.args,
         )
         existing = self.find_existing()
 
-        # Pick the running container with matching signature, if any.
         match = next(
             (
                 c
@@ -183,14 +298,12 @@ class VLLMManager:
             None,
         )
         if match is not None:
-            # Tidy up any extra managed containers from previous runs.
             for c in existing:
                 if c.id != match.id:
                     self.shutdown(c.id)
             self.container_id = match.id
-            return (match.id, True)
+            return (match.id, True, resolved)
 
-        # Need to recreate. First, decide whether destruction is allowed.
         running_mismatch = [
             c for c in existing if c.status == "running" and c.signature != desired_sig
         ]
@@ -198,7 +311,7 @@ class VLLMManager:
             allowed = (
                 confirm(
                     "Existing vLLM container has different config "
-                    "(models / gpu / port). Recreate? [y/N]"
+                    "(models / gpu / port / tuning). Recreate? [y/N]"
                 )
                 if confirm is not None
                 else False
@@ -209,14 +322,19 @@ class VLLMManager:
                     "Pass --yes, or stop the existing container manually."
                 )
 
-        # Stop + remove every managed container we found.
         for c in existing:
             self.shutdown(c.id)
 
-        # Pull (no-op if cached) then start fresh.
         self.ensure_image(on_progress=on_pull_progress)
-        new_id = self.start_container(model_names, gpu=gpu, hf_token=hf_token)
-        return (new_id, False)
+        new_id, _ = self.start_container(
+            specs,
+            gpu=gpu,
+            total_vram_gb=total_vram_gb,
+            free_vram_gb=free_vram_gb,
+            overrides=overrides,
+            hf_token=hf_token,
+        )
+        return (new_id, False, resolved)
 
     def wait_until_ready(
         self,
@@ -258,20 +376,6 @@ class VLLMManager:
             tick += 1
             time.sleep(poll_interval)
         return False
-
-    def deploy(
-        self,
-        model_names: list[str],
-        gpu: bool = False,
-        hf_token: str | None = None,
-    ) -> str:
-        """Convenience: pull image (if needed) and start the container.
-
-        Kept for backward compatibility; the CLI uses the staged methods
-        directly so it can interleave progress messages.
-        """
-        self.ensure_image()
-        return self.start_container(model_names, gpu=gpu, hf_token=hf_token)
 
     def shutdown(self, container_id: str) -> None:
         stop_container(self.runtime, container_id)

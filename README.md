@@ -53,6 +53,9 @@ This will:
 
 After setup, your local AI router is available at `http://127.0.0.1:8000/v1`.
 
+On first run, RelayLM prints which model it selected and the memory
+breakdown it computed for vLLM — see [Auto-Sizing](docs/guide.md#auto-sizing).
+
 ## Next Steps
 
 - [User Guide](docs/guide.md) — Detailed installation and configuration instructions

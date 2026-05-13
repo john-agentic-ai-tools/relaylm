@@ -1,62 +1,61 @@
+"""Memory-aware model selection.
+
+Picks the largest registry entry that fits in the detected free VRAM at
+a usable minimum context, leaving a safety margin for measurement drift.
+"""
+
 from typing import Any
 
 from relaylm.hardware.detector import HardwareProfile
+from relaylm.models.registry import REGISTRY, ModelSpec, find, heuristic_spec
 
-# (name, min_ram_gb, min_vram_gb)
-SMALL_MODELS: list[tuple[str, float, float | None]] = [
-    ("Qwen/Qwen3-0.6B", 2.0, 1.0),
-    ("Qwen/Qwen3-1.5B", 4.0, 2.0),
-    ("gemma-3-1b-it-Q4_K_M", 2.0, 1.0),
-]
-
-MEDIUM_MODELS: list[tuple[str, float, float | None]] = [
-    ("Qwen/Qwen3-4B", 8.0, 4.0),
-    ("mistral-7b-v0.3", 14.0, 4.0),
-    ("llama-3.1-8b", 16.0, 5.0),
-]
-
-LARGE_MODELS: list[tuple[str, float, float | None]] = [
-    ("Qwen/Qwen3-14B", 28.0, 8.0),
-    ("codellama-13b", 26.0, 7.0),
-    ("mixtral-8x7b", 48.0, 16.0),
-]
+# Cover for short-term VRAM fluctuations between measurement and launch.
+SAFETY_MARGIN = 0.90
+# A model isn't useful as a chat/agent backend below this context length.
+MIN_CONTEXT_TOKENS = 2048
 
 
-def _fits_in_ram(model: tuple[str, float, float | None], ram_gb: float) -> bool:
-    return model[1] <= ram_gb
+def select_model(
+    hardware: HardwareProfile,
+    *,
+    min_context: int = MIN_CONTEXT_TOKENS,
+    safety_margin: float = SAFETY_MARGIN,
+) -> ModelSpec | None:
+    """Return the largest registry model that fits the hardware, or None."""
+    free_vram_gb = hardware.max_gpu_vram_free_gb
+    if free_vram_gb <= 0:
+        return None
+
+    budget_gb = free_vram_gb * safety_margin
+    candidates = sorted(REGISTRY, key=lambda s: s.params_b, reverse=True)
+    for spec in candidates:
+        if spec.min_ram_gb > hardware.ram_gb:
+            continue
+        if spec.min_runtime_gb(min_context) <= budget_gb:
+            return spec
+    return None
 
 
-def _fits_in_vram(model: tuple[str, float, float | None], vram_gb: float) -> bool:
-    vram_needed = model[2]
-    return vram_needed is None or vram_needed <= vram_gb
+def resolve_specs(model_ids: list[str]) -> list[ModelSpec]:
+    """Resolve user-supplied HF ids to ModelSpec, falling back to heuristic."""
+    out: list[ModelSpec] = []
+    for raw in model_ids:
+        name = raw.strip()
+        if not name:
+            continue
+        match = find(name)
+        out.append(match if match is not None else heuristic_spec(name))
+    return out
 
 
-def select_models(
-    hardware: HardwareProfile, max_models: int = 2
-) -> list[dict[str, Any]]:
-    models: list[tuple[str, float, float | None]] = []
-
-    if hardware.gpu_vram_gb:
-        vram = max(hardware.gpu_vram_gb)
-        candidates = LARGE_MODELS + MEDIUM_MODELS + SMALL_MODELS
-        for m in candidates:
-            if _fits_in_vram(m, vram) and _fits_in_ram(m, hardware.ram_gb):
-                models.append(m)
-    else:
-        candidates = SMALL_MODELS + MEDIUM_MODELS + LARGE_MODELS
-        for m in candidates:
-            if _fits_in_ram(m, hardware.ram_gb):
-                models.append(m)
-
-    if not models:
-        models = SMALL_MODELS[:1]
-
-    result: list[dict[str, Any]] = []
-    for name, _, _ in models[:max_models]:
-        result.append(
-            {"name": name, "source": "huggingface", "gpu_index": None, "args": {}}
-        )
-    return result
+def spec_to_config_entry(spec: ModelSpec) -> dict[str, Any]:
+    """Render a ModelSpec for storage in `~/.config/relaylm/config.yml`."""
+    return {
+        "name": spec.name,
+        "source": "huggingface",
+        "gpu_index": None,
+        "args": {},
+    }
 
 
 def validate_models(model_ids: list[str]) -> list[str]:

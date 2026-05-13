@@ -4,11 +4,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from relaylm.container import vllm
+from relaylm.models.registry import ModelSpec
 
 
 @pytest.fixture
 def manager() -> vllm.VLLMManager:
     return vllm.VLLMManager(runtime="docker")
+
+
+@pytest.fixture
+def primary_spec() -> ModelSpec:
+    return ModelSpec(
+        name="Qwen/Qwen3-0.6B", params_b=0.6, hidden_size=1024, num_layers=24
+    )
+
+
+def _hw_inputs() -> dict[str, float]:
+    return {"total_vram_gb": 8.0, "free_vram_gb": 6.7}
 
 
 class TestConstructor:
@@ -61,52 +73,126 @@ class TestEnsureImage:
         assert pull.call_args.kwargs["progress"] is cb
 
 
+class TestBuildVllmArgs:
+    def test_auto_sizes_for_tight_8gb_card(self, primary_spec: ModelSpec) -> None:
+        r = vllm.build_vllm_args([primary_spec], total_vram_gb=8.0, free_vram_gb=6.7)
+        # Util scales with free/total; clamped [0.70, 0.95].
+        assert 0.70 <= r.util <= 0.95
+        # 0.6B model + 4 GB KV budget = plenty of context.
+        assert r.max_model_len > 2048
+        assert r.max_num_seqs == 1
+        assert "--enforce-eager" in r.args
+        # First flag emitted is the model.
+        assert r.args[0:2] == ["--model", "Qwen/Qwen3-0.6B"]
+
+    def test_auto_sizes_for_24gb_card(self) -> None:
+        big = ModelSpec(name="m", params_b=7.0, hidden_size=4096, num_layers=32)
+        r = vllm.build_vllm_args([big], total_vram_gb=24.0, free_vram_gb=22.0)
+        # On a 24 GB card we can hit the upper util cap.
+        assert r.util >= 0.85
+        assert r.max_model_len <= vllm._MAX_MODEL_LEN_CAP
+
+    def test_overrides_take_precedence(self, primary_spec: ModelSpec) -> None:
+        r = vllm.build_vllm_args(
+            [primary_spec],
+            total_vram_gb=8.0,
+            free_vram_gb=6.7,
+            overrides=vllm.VLLMOverrides(
+                gpu_memory_utilization=0.92,
+                max_model_len=16384,
+                max_num_seqs=4,
+            ),
+        )
+        assert r.util == 0.92
+        assert r.max_model_len == 16384
+        assert r.max_num_seqs == 4
+
+    def test_caps_max_model_len_at_global_ceiling(
+        self, primary_spec: ModelSpec
+    ) -> None:
+        # Even on a giant card, don't reserve absurd KV space without an override.
+        r = vllm.build_vllm_args([primary_spec], total_vram_gb=80.0, free_vram_gb=80.0)
+        assert r.max_model_len <= vllm._MAX_MODEL_LEN_CAP
+
+    def test_floors_max_model_len_at_minimum(self) -> None:
+        # Massive model on small card → tiny KV budget but never below 512.
+        big = ModelSpec(name="m", params_b=14.0, hidden_size=5120, num_layers=40)
+        r = vllm.build_vllm_args([big], total_vram_gb=8.0, free_vram_gb=6.0)
+        assert r.max_model_len >= 512
+
+    def test_raises_on_empty_specs(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            vllm.build_vllm_args([], total_vram_gb=8.0, free_vram_gb=6.0)
+
+    def test_emits_multiple_model_flags(self) -> None:
+        a = ModelSpec(name="A", params_b=0.6, hidden_size=1024, num_layers=24)
+        b = ModelSpec(name="B", params_b=0.6, hidden_size=1024, num_layers=24)
+        r = vllm.build_vllm_args([a, b], total_vram_gb=8.0, free_vram_gb=6.7)
+        model_idxs = [i for i, t in enumerate(r.args) if t == "--model"]
+        assert len(model_idxs) == 2
+
+
 class TestStartContainer:
-    def test_returns_container_id_on_success(self, manager: vllm.VLLMManager) -> None:
+    def test_returns_id_and_resolved_on_success(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         result = MagicMock(returncode=0, stdout="cid-123\n", stderr="")
         with patch.object(vllm, "run_container", return_value=result):
-            cid = manager.start_container(["model-a"], gpu=False)
+            cid, resolved = manager.start_container([primary_spec], **_hw_inputs())
         assert cid == "cid-123"
         assert manager.container_id == "cid-123"
+        assert resolved.max_model_len > 0
 
-    def test_raises_with_stderr_on_failure(self, manager: vllm.VLLMManager) -> None:
+    def test_raises_with_stderr_on_failure(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         result = MagicMock(returncode=1, stdout="", stderr="boom")
         with patch.object(vllm, "run_container", return_value=result):
             with pytest.raises(RuntimeError, match="boom"):
-                manager.start_container(["model-a"])
+                manager.start_container([primary_spec], **_hw_inputs())
 
-    def test_passes_memory_safety_flags(self, manager: vllm.VLLMManager) -> None:
-        # vLLM's default --gpu-memory-utilization 0.92 fails on 8 GB cards
-        # when the host has other GPU users (typical on WSL2). We pass a
-        # safer default and --enforce-eager to skip CUDA graph allocation.
+    def test_passes_hf_token_to_container_env(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         result = MagicMock(returncode=0, stdout="cid\n", stderr="")
         with patch.object(vllm, "run_container", return_value=result) as rc:
-            manager.start_container(["model-a"], gpu=True)
-        extra = rc.call_args.kwargs["extra_args"]
-        assert "--gpu-memory-utilization" in extra
-        util_idx = extra.index("--gpu-memory-utilization")
-        assert extra[util_idx + 1] == "0.85"
-        assert "--enforce-eager" in extra
-
-    def test_passes_hf_token_to_container_env(self, manager: vllm.VLLMManager) -> None:
-        result = MagicMock(returncode=0, stdout="cid\n", stderr="")
-        with patch.object(vllm, "run_container", return_value=result) as rc:
-            manager.start_container(["model-a"], hf_token="hf_secret")
+            manager.start_container(
+                [primary_spec], hf_token="hf_secret", **_hw_inputs()
+            )
         assert rc.call_args.kwargs["env"]["HF_TOKEN"] == "hf_secret"
 
-    def test_no_hf_token_when_omitted(self, manager: vllm.VLLMManager) -> None:
+    def test_no_hf_token_when_omitted(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         result = MagicMock(returncode=0, stdout="cid\n", stderr="")
         with patch.object(vllm, "run_container", return_value=result) as rc:
-            manager.start_container(["model-a"])
+            manager.start_container([primary_spec], **_hw_inputs())
         assert "HF_TOKEN" not in rc.call_args.kwargs["env"]
 
-    def test_attaches_management_labels(self, manager: vllm.VLLMManager) -> None:
+    def test_attaches_management_labels(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         result = MagicMock(returncode=0, stdout="cid\n", stderr="")
         with patch.object(vllm, "run_container", return_value=result) as rc:
-            manager.start_container(["model-a"], gpu=True)
+            manager.start_container([primary_spec], gpu=True, **_hw_inputs())
         labels = rc.call_args.kwargs["labels"]
         assert labels[vllm.MANAGED_LABEL] == "true"
-        assert len(labels[vllm.CONFIG_LABEL]) == 12  # truncated sha1
+        assert len(labels[vllm.CONFIG_LABEL]) == 12
+
+    def test_signature_changes_when_override_changes(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
+        result = MagicMock(returncode=0, stdout="cid\n", stderr="")
+        with patch.object(vllm, "run_container", return_value=result) as rc:
+            manager.start_container([primary_spec], **_hw_inputs())
+            sig_default = rc.call_args.kwargs["labels"][vllm.CONFIG_LABEL]
+            manager.start_container(
+                [primary_spec],
+                overrides=vllm.VLLMOverrides(max_model_len=2048),
+                **_hw_inputs(),
+            )
+            sig_override = rc.call_args.kwargs["labels"][vllm.CONFIG_LABEL]
+        assert sig_default != sig_override
 
 
 class TestComputeConfigSignature:
@@ -145,8 +231,6 @@ class TestComputeConfigSignature:
         assert self._sig(extra_args=["--a"]) != self._sig(extra_args=["--b"])
 
     def test_signature_excludes_hf_token(self) -> None:
-        # The function doesn't accept hf_token at all; this is a structural
-        # guarantee that nothing token-shaped can leak into the hash.
         with pytest.raises(TypeError):
             vllm.compute_config_signature(  # type: ignore[call-arg]
                 model_names=["a"],
@@ -178,10 +262,24 @@ class TestReconcile:
         manager: vllm.VLLMManager,
         existing: list[tuple[str, str, str]],
     ) -> tuple[MagicMock, MagicMock, MagicMock]:
-        # Returns (start_mock, ensure_image_mock, shutdown_mock).
         list_p = patch.object(vllm, "list_managed_containers", return_value=existing)
         list_p.start()
-        start_p = patch.object(manager, "start_container", return_value="new-id")
+        start_p = patch.object(
+            manager,
+            "start_container",
+            return_value=(
+                "new-id",
+                vllm.ResolvedVLLMArgs(
+                    args=[],
+                    util=0.8,
+                    max_model_len=4096,
+                    max_num_seqs=1,
+                    weights_gb=1.2,
+                    overhead_gb=0.7,
+                    kv_budget_gb=4.0,
+                ),
+            ),
+        )
         start_mock = start_p.start()
         ensure_p = patch.object(manager, "ensure_image", return_value=True)
         ensure_mock = ensure_p.start()
@@ -189,19 +287,25 @@ class TestReconcile:
         shutdown_mock = shutdown_p.start()
         return start_mock, ensure_mock, shutdown_mock
 
-    def _matching_sig(self, model_names: list[str], gpu: bool) -> str:
+    def _matching_sig(self, manager: vllm.VLLMManager, primary: ModelSpec) -> str:
+        # Compute the same signature reconcile will produce.
+        resolved = vllm.build_vllm_args([primary], total_vram_gb=8.0, free_vram_gb=6.7)
         return vllm.compute_config_signature(
-            model_names=model_names,
-            gpu=gpu,
+            model_names=[primary.name],
+            gpu=False,
             port=vllm.LOCAL_PORT,
             image=vllm.VLLM_IMAGE,
-            extra_args=vllm._build_vllm_args(model_names),
+            extra_args=resolved.args,
         )
 
-    def test_no_existing_creates_new(self, manager: vllm.VLLMManager) -> None:
+    def test_no_existing_creates_new(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         start, ensure, shutdown = self._patches(manager, [])
         try:
-            cid, reused = manager.reconcile(["m1"], gpu=False, assume_yes=True)
+            cid, reused, _ = manager.reconcile(
+                [primary_spec], assume_yes=True, **_hw_inputs()
+            )
         finally:
             patch.stopall()
         assert (cid, reused) == ("new-id", False)
@@ -210,14 +314,16 @@ class TestReconcile:
         shutdown.assert_not_called()
 
     def test_running_matching_signature_is_reused(
-        self, manager: vllm.VLLMManager
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
     ) -> None:
-        sig = self._matching_sig(["m1"], gpu=False)
+        sig = self._matching_sig(manager, primary_spec)
         start, ensure, shutdown = self._patches(
             manager, [("running-id", "running", sig)]
         )
         try:
-            cid, reused = manager.reconcile(["m1"], gpu=False, assume_yes=True)
+            cid, reused, _ = manager.reconcile(
+                [primary_spec], assume_yes=True, **_hw_inputs()
+            )
         finally:
             patch.stopall()
         assert (cid, reused) == ("running-id", True)
@@ -226,13 +332,15 @@ class TestReconcile:
         shutdown.assert_not_called()
 
     def test_running_mismatch_with_yes_recreates(
-        self, manager: vllm.VLLMManager
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
     ) -> None:
         start, ensure, shutdown = self._patches(
             manager, [("old-id", "running", "wrong-sig")]
         )
         try:
-            cid, reused = manager.reconcile(["m1"], gpu=False, assume_yes=True)
+            cid, reused, _ = manager.reconcile(
+                [primary_spec], assume_yes=True, **_hw_inputs()
+            )
         finally:
             patch.stopall()
         assert (cid, reused) == ("new-id", False)
@@ -240,17 +348,19 @@ class TestReconcile:
         ensure.assert_called_once()
         start.assert_called_once()
 
-    def test_running_mismatch_declined_raises(self, manager: vllm.VLLMManager) -> None:
+    def test_running_mismatch_declined_raises(
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
+    ) -> None:
         start, ensure, shutdown = self._patches(
             manager, [("old-id", "running", "wrong-sig")]
         )
         try:
             with pytest.raises(RuntimeError, match="confirmation"):
                 manager.reconcile(
-                    ["m1"],
-                    gpu=False,
+                    [primary_spec],
                     assume_yes=False,
                     confirm=lambda _: False,
+                    **_hw_inputs(),
                 )
         finally:
             patch.stopall()
@@ -259,12 +369,14 @@ class TestReconcile:
         ensure.assert_not_called()
 
     def test_exited_container_is_cleaned_up_then_recreated(
-        self, manager: vllm.VLLMManager
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
     ) -> None:
-        sig = self._matching_sig(["m1"], gpu=False)
+        sig = self._matching_sig(manager, primary_spec)
         start, ensure, shutdown = self._patches(manager, [("dead-id", "exited", sig)])
         try:
-            cid, reused = manager.reconcile(["m1"], gpu=False, assume_yes=True)
+            cid, reused, _ = manager.reconcile(
+                [primary_spec], assume_yes=True, **_hw_inputs()
+            )
         finally:
             patch.stopall()
         assert (cid, reused) == ("new-id", False)
@@ -273,9 +385,9 @@ class TestReconcile:
         start.assert_called_once()
 
     def test_multiple_managed_keeps_matching_running_cleans_rest(
-        self, manager: vllm.VLLMManager
+        self, manager: vllm.VLLMManager, primary_spec: ModelSpec
     ) -> None:
-        sig = self._matching_sig(["m1"], gpu=False)
+        sig = self._matching_sig(manager, primary_spec)
         start, ensure, shutdown = self._patches(
             manager,
             [
@@ -285,13 +397,14 @@ class TestReconcile:
             ],
         )
         try:
-            cid, reused = manager.reconcile(["m1"], gpu=False, assume_yes=True)
+            cid, reused, _ = manager.reconcile(
+                [primary_spec], assume_yes=True, **_hw_inputs()
+            )
         finally:
             patch.stopall()
         assert (cid, reused) == ("keep", True)
         ensure.assert_not_called()
         start.assert_not_called()
-        # The two non-matching containers got cleaned up.
         shutdown_ids = sorted(c.args[0] for c in shutdown.call_args_list)
         assert shutdown_ids == ["stale-exit", "stale-run"]
 
@@ -390,13 +503,10 @@ class TestWaitUntilReady:
             patch("time.sleep"),
         ):
             ok = manager.wait_until_ready(
-                timeout=600,
-                poll_interval=0.01,
-                container_id="cid",
+                timeout=600, poll_interval=0.01, container_id="cid"
             )
 
         assert ok is False
-        # First tick (tick=0) hits the modulo check and finds exited → bail out.
         assert status.call_count == 1
 
     def test_status_check_is_throttled(self, manager: vllm.VLLMManager) -> None:
@@ -418,11 +528,8 @@ class TestWaitUntilReady:
             patch("time.sleep"),
         ):
             ok = manager.wait_until_ready(
-                timeout=60,
-                poll_interval=0.001,
-                container_id="cid",
+                timeout=60, poll_interval=0.001, container_id="cid"
             )
 
         assert ok is True
-        # Six failed polls → ticks 0..5 → status checked at ticks 0, 3 → 2 calls.
         assert status.call_count == 2

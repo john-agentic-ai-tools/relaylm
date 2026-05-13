@@ -72,22 +72,42 @@ class TestNvidiaSmiPath:
 class TestDetectNvidiaGpu:
     def test_returns_false_when_no_binary(self) -> None:
         with patch.object(detector, "_nvidia_smi_path", return_value=None):
-            assert detector._detect_nvidia_gpu() == (False, [])
+            assert detector._detect_nvidia_gpu() == (False, [], [])
 
-    def test_parses_vram_when_binary_found(self) -> None:
-        completed = MagicMock(returncode=0, stdout="8192\n", stderr="")
+    def test_parses_total_and_free_vram(self) -> None:
+        completed = MagicMock(returncode=0, stdout="8192, 7123\n", stderr="")
         with (
             patch.object(
                 detector, "_nvidia_smi_path", return_value="/usr/bin/nvidia-smi"
             ),
             patch("subprocess.run", return_value=completed) as run,
         ):
-            assert detector._detect_nvidia_gpu() == (True, [8.0])
+            present, totals, frees = detector._detect_nvidia_gpu()
+        assert present is True
+        assert totals == [8.0]
+        # 7123 MB → 6.96 GB rounded.
+        assert frees == [round(7123 / 1024, 1)]
         cmd = run.call_args.args[0]
-        assert cmd[0] == "/usr/bin/nvidia-smi"
+        assert "--query-gpu=memory.total,memory.free" in cmd
+
+    def test_handles_multiple_gpus(self) -> None:
+        completed = MagicMock(
+            returncode=0,
+            stdout="24576, 22000\n24576, 23000\n",
+            stderr="",
+        )
+        with (
+            patch.object(
+                detector, "_nvidia_smi_path", return_value="/usr/bin/nvidia-smi"
+            ),
+            patch("subprocess.run", return_value=completed),
+        ):
+            present, totals, frees = detector._detect_nvidia_gpu()
+        assert present is True
+        assert len(totals) == 2 and len(frees) == 2
 
     def test_uses_wsl_binary_when_resolved(self) -> None:
-        completed = MagicMock(returncode=0, stdout="8192\n", stderr="")
+        completed = MagicMock(returncode=0, stdout="8192, 7000\n", stderr="")
         with (
             patch.object(
                 detector, "_nvidia_smi_path", return_value=detector._WSL_NVIDIA_SMI
@@ -97,7 +117,7 @@ class TestDetectNvidiaGpu:
             detector._detect_nvidia_gpu()
         assert run.call_args.args[0][0] == detector._WSL_NVIDIA_SMI
 
-    def test_returns_false_when_binary_present_but_call_fails(self) -> None:
+    def test_returns_empty_when_binary_present_but_call_fails(self) -> None:
         with (
             patch.object(
                 detector, "_nvidia_smi_path", return_value=detector._WSL_NVIDIA_SMI
@@ -107,4 +127,24 @@ class TestDetectNvidiaGpu:
                 side_effect=subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10),
             ),
         ):
-            assert detector._detect_nvidia_gpu() == (False, [])
+            assert detector._detect_nvidia_gpu() == (False, [], [])
+
+
+class TestHardwareProfileVram:
+    def test_max_free_falls_back_to_total_when_unset(self) -> None:
+        hp = detector.HardwareProfile(
+            ram_gb=16.0, cpu_cores=8, has_nvidia_gpu=True, gpu_vram_gb=[8.0]
+        )
+        # gpu_vram_free_gb defaulted from total.
+        assert hp.max_gpu_vram_free_gb == 8.0
+
+    def test_max_helpers_when_both_set(self) -> None:
+        hp = detector.HardwareProfile(
+            ram_gb=16.0,
+            cpu_cores=8,
+            has_nvidia_gpu=True,
+            gpu_vram_gb=[24.0, 12.0],
+            gpu_vram_free_gb=[20.0, 10.0],
+        )
+        assert hp.max_gpu_vram_gb == 24.0
+        assert hp.max_gpu_vram_free_gb == 20.0
