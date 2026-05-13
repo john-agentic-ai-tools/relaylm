@@ -1,4 +1,7 @@
 import getpass
+import os
+import sys
+import time
 from typing import Any
 
 import typer
@@ -8,6 +11,40 @@ app = typer.Typer(
     help="Single-command AI router environment bootstrap",
     no_args_is_help=True,
 )
+
+
+_PROGRESS_THROTTLE_SECONDS = 5.0
+_WAIT_LOG_MAX_CHARS = 90
+_last_progress_emit = 0.0
+
+
+def _print_pull_progress(done: int, total: int, elapsed: float) -> None:
+    global _last_progress_emit
+    mins, secs = divmod(int(elapsed), 60)
+    total_str = str(total) if total else "?"
+    msg = f"  Pulling layers: {done}/{total_str} (elapsed {mins}m{secs:02d}s)"
+    if sys.stdout.isatty():
+        typer.echo(f"\r{msg}", nl=False)
+        return
+    if elapsed - _last_progress_emit >= _PROGRESS_THROTTLE_SECONDS:
+        typer.echo(msg)
+        _last_progress_emit = elapsed
+
+
+def _print_wait_progress(elapsed: float, last_log: str | None) -> None:
+    global _last_progress_emit
+    mins, secs = divmod(int(elapsed), 60)
+    snippet = (last_log or "starting up...").strip()
+    if len(snippet) > _WAIT_LOG_MAX_CHARS:
+        snippet = snippet[: _WAIT_LOG_MAX_CHARS - 1] + "…"
+    msg = f"  Waiting for vLLM ({mins}m{secs:02d}s) | {snippet}"
+    if sys.stdout.isatty():
+        typer.echo(f"\r\033[K{msg}", nl=False)
+        return
+    if elapsed - _last_progress_emit >= _PROGRESS_THROTTLE_SECONDS:
+        typer.echo(msg)
+        _last_progress_emit = elapsed
+
 
 providers_app = typer.Typer(help="Manage external AI providers")
 config_app = typer.Typer(help="Manage RelayLM configuration")
@@ -30,13 +67,33 @@ def setup(
         None, "--runtime", help="Force container runtime: podman or docker"
     ),
     port: int = typer.Option(8000, "--port", help="Router port"),
+    max_model_len: int | None = typer.Option(
+        None,
+        "--max-model-len",
+        help="Advanced: override the auto-computed vLLM max-model-len.",
+    ),
+    max_num_seqs: int | None = typer.Option(
+        None,
+        "--max-num-seqs",
+        help="Advanced: override the default vLLM max-num-seqs (default 1).",
+    ),
+    gpu_memory_util: float | None = typer.Option(
+        None,
+        "--gpu-memory-util",
+        help="Advanced: override the auto-computed vLLM gpu-memory-utilization.",
+    ),
 ) -> None:
     """Bootstrap the local AI routing environment."""
     from relaylm.config.backup import create_backup
     from relaylm.config.loader import load_config, save_config
     from relaylm.container.runtime import detect_runtime
     from relaylm.hardware.detector import detect
-    from relaylm.models.selector import select_models, validate_models
+    from relaylm.models.registry import find as find_spec
+    from relaylm.models.selector import (
+        resolve_specs,
+        select_model,
+        validate_models,
+    )
     from relaylm.platform import is_wsl2, wsl_distro_name
 
     on_wsl2 = is_wsl2()
@@ -58,14 +115,42 @@ def setup(
         if invalid:
             typer.echo(f"Error: Invalid model names: {invalid}", err=True)
             raise typer.Exit(code=2)
-        selected_models: list[dict[str, Any]] = [
-            {"name": m, "source": "huggingface", "gpu_index": None, "args": {}}
-            for m in model_list
-        ]
+        selected_specs = resolve_specs(model_list)
+        for name, spec in zip(model_list, selected_specs):
+            if find_spec(name) is None:
+                typer.echo(
+                    f"Warning: '{name}' is not in the curated registry. "
+                    f"Auto-sizing will use heuristic estimates "
+                    f"(~{spec.params_b:.1f}B FP16). Pass --max-model-len / "
+                    f"--gpu-memory-util to tune if needed."
+                )
     else:
-        selected_models = select_models(hardware)
+        chosen = select_model(hardware)
+        if chosen is None:
+            free_gb = hardware.max_gpu_vram_free_gb
+            total_gb = hardware.max_gpu_vram_gb
+            typer.echo(
+                f"No local model fits your available VRAM "
+                f"({free_gb:.1f} GB free of {total_gb:.1f} GB total).\n"
+                "Configure a cloud provider to use cloud inference instead:\n"
+                "  relaylm providers add anthropic --key sk-ant-...\n"
+                "  relaylm providers add openai    --key sk-...",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        selected_specs = [chosen]
+    # Mirror in config-entry shape for save_config below.
+    selected_models: list[dict[str, Any]] = [
+        {"name": s.name, "source": "huggingface", "gpu_index": None, "args": {}}
+        for s in selected_specs
+    ]
 
-    typer.echo(f"Selected models: {[m['name'] for m in selected_models]}")
+    typer.echo(f"Selected models: {[s.name for s in selected_specs]}")
+    primary = selected_specs[0]
+    typer.echo(
+        f"  weights: {primary.weights_gb:.1f} GB ({primary.params_b}B params, "
+        f"{primary.dtype})"
+    )
 
     rt = runtime or detect_runtime()
     if rt is None:
@@ -89,13 +174,129 @@ def setup(
 
     typer.echo(f"Using container runtime: {rt}")
 
-    from relaylm.container.vllm import VLLMManager
+    from relaylm.container.vllm import VLLM_IMAGE, VLLMManager, VLLMOverrides
 
     manager = VLLMManager(runtime=rt)
     use_gpu = hardware.has_nvidia_gpu or hardware.has_amd_gpu
-    container_id = manager.deploy([m["name"] for m in selected_models], gpu=use_gpu)
-    typer.echo(f"vLLM container started: {container_id}")
-    typer.echo(f"Router endpoint: {manager.endpoint_url}")
+    overrides = VLLMOverrides(
+        gpu_memory_utilization=gpu_memory_util,
+        max_model_len=max_model_len,
+        max_num_seqs=max_num_seqs,
+    )
+    total_vram_gb = hardware.max_gpu_vram_gb
+    free_vram_gb = hardware.max_gpu_vram_free_gb
+
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token and not yes:
+        typer.echo(
+            "Hugging Face token not set. A token enables higher download "
+            "rate limits and access to gated models "
+            "(see https://huggingface.co/settings/tokens). Press Enter to skip."
+        )
+        entered = getpass.getpass("HF_TOKEN (hidden, optional): ").strip()
+        hf_token = entered or None
+    if hf_token:
+        typer.echo("Using HF_TOKEN for Hugging Face authentication.")
+    else:
+        typer.echo(
+            "No HF_TOKEN set — downloads will be unauthenticated and rate-limited. "
+            "Set HF_TOKEN in your environment to authenticate."
+        )
+
+    typer.echo("Checking for existing vLLM container...")
+
+    def _confirm(prompt: str) -> bool:
+        return typer.confirm(prompt, default=False)
+
+    global _last_progress_emit
+
+    def _pull_progress(done: int, total: int, elapsed: float) -> None:
+        # The first time we get a progress callback, announce the pull.
+        global _last_progress_emit
+        if _last_progress_emit == 0.0 and elapsed < 1.0:
+            typer.echo(
+                f"Pulling vLLM image ({VLLM_IMAGE}, ~10 GB). "
+                "First pull can take 10-30 minutes depending on your connection."
+            )
+        _print_pull_progress(done, total, elapsed)
+
+    _last_progress_emit = 0.0
+    try:
+        container_id, reused, resolved = manager.reconcile(
+            specs=selected_specs,
+            gpu=use_gpu,
+            total_vram_gb=total_vram_gb,
+            free_vram_gb=free_vram_gb,
+            overrides=overrides,
+            hf_token=hf_token,
+            assume_yes=yes,
+            confirm=_confirm,
+            on_pull_progress=_pull_progress,
+        )
+    except RuntimeError as exc:
+        if sys.stdout.isatty():
+            typer.echo("")
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if sys.stdout.isatty() and _last_progress_emit != 0.0:
+        typer.echo("")
+
+    if total_vram_gb > 0:
+        typer.echo(
+            f"GPU budget: {resolved.util * total_vram_gb:.2f} GB "
+            f"({int(resolved.util * 100)}% of {total_vram_gb:.1f} GB total, "
+            f"{free_vram_gb:.1f} GB free)"
+        )
+        typer.echo(
+            f"Runtime allocation: weights {resolved.weights_gb:.1f} GB + "
+            f"overhead {resolved.overhead_gb:.1f} GB + "
+            f"KV cache up to {resolved.kv_budget_gb:.1f} GB"
+        )
+    typer.echo(
+        f"Auto-tuned: --max-model-len {resolved.max_model_len} "
+        f"--max-num-seqs {resolved.max_num_seqs} "
+        f"--gpu-memory-utilization {resolved.util:.2f}"
+    )
+
+    if reused:
+        typer.echo(f"Reusing existing vLLM container: {container_id}")
+    else:
+        typer.echo(f"vLLM container started: {container_id}")
+
+    from relaylm.container.runtime import container_status
+
+    typer.echo(
+        "Waiting for vLLM to load models (this can take 5-15 minutes on first run)..."
+    )
+    _last_progress_emit = 0.0
+    ready_start = time.monotonic()
+    ready = manager.wait_until_ready(
+        timeout=900.0,
+        container_id=container_id,
+        on_tick=_print_wait_progress,
+    )
+    if sys.stdout.isatty():
+        typer.echo("")
+    if not ready:
+        status = container_status(rt, container_id)
+        if status in ("exited", "dead"):
+            typer.echo(
+                f"vLLM container exited during startup (status: {status}). "
+                f"Check logs: `{rt} logs {container_id}`",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"Router did not become ready within 15 minutes. "
+                f"Check container logs: `{rt} logs {container_id}`",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+    ready_elapsed = int(time.monotonic() - ready_start)
+    typer.echo(
+        f"Router ready at {manager.endpoint_url} "
+        f"(took {ready_elapsed // 60}m{ready_elapsed % 60:02d}s)"
+    )
 
     from relaylm.agents.detector import detect_and_configure_agents
 

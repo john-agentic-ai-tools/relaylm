@@ -26,12 +26,16 @@
 
 ### GPU Recommendations
 
-GPU acceleration is optional but recommended for better performance:
+GPU acceleration is recommended:
 
-- **NVIDIA**: Any CUDA-compatible GPU with 4 GB+ VRAM
-- **AMD**: ROCm-compatible GPU
+- **NVIDIA**: Any CUDA-compatible GPU with 4 GB+ VRAM. More VRAM means
+  RelayLM can pick a larger model automatically.
+- **AMD**: ROCm-compatible GPU.
 
-RelayLM auto-detects your GPU during `relaylm setup` and selects appropriate models based on available VRAM.
+You do not need to pre-classify your hardware. At setup time RelayLM
+measures **free** GPU memory (not just total), looks up architectural
+numbers for each candidate model in its curated registry, and picks the
+largest one that fits with a usable context window — see [Auto-Sizing](#auto-sizing).
 
 ### Checking Your System
 
@@ -42,8 +46,8 @@ grep MemTotal /proc/meminfo
 # Check CPU cores
 nproc
 
-# Check NVIDIA GPU memory
-nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits
+# Check NVIDIA GPU total and free memory
+nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits
 
 # Check AMD GPU
 rocm-smi
@@ -211,6 +215,13 @@ relaylm setup [OPTIONS]
 | `--yes` / `--non-interactive` | Auto-accept all prompts |
 | `--runtime TEXT` | Force container runtime: `podman` or `docker` |
 | `--port INTEGER` | Router port (default: 8000) |
+| `--max-model-len INTEGER` | *Advanced.* Override the auto-computed vLLM context length |
+| `--max-num-seqs INTEGER` | *Advanced.* Override the default concurrent-sequence cap (1) |
+| `--gpu-memory-util FLOAT` | *Advanced.* Override the auto-computed vLLM memory fraction |
+
+The three "advanced" options are explained in
+[Advanced Tuning](#advanced-tuning). Most users should not need them —
+defaults are auto-computed from your hardware and the selected model.
 
 #### Override Model Selection
 
@@ -229,6 +240,114 @@ relaylm setup --runtime docker
 ```bash
 relaylm setup --port 8080
 ```
+
+### Auto-Sizing
+
+When you run `relaylm setup` without `--models`, RelayLM picks a model
+that actually fits your hardware:
+
+1. **Measures free VRAM** via `nvidia-smi` (not just total — what's
+   currently available, after accounting for the desktop session,
+   browsers, etc.).
+2. **Looks up the curated model registry** at
+   `src/relaylm/models/registry.py`. Each entry has real architectural
+   numbers (parameter count, hidden size, layer count, dtype) used to
+   estimate runtime memory.
+3. **Picks the largest model** whose weights + activations + KV cache at
+   a 2048-token minimum context fit inside 90% of your free VRAM (a
+   small safety margin covers measurement drift).
+4. **Computes vLLM flags** from the resolved model + your VRAM:
+   `--gpu-memory-utilization` scales with how much VRAM is actually
+   free; `--max-model-len` is sized so the KV cache fits in the
+   remaining budget (capped at 8192 to avoid over-reservation).
+
+Sample output on an 8 GB card with ~6.7 GB free:
+
+```text
+Detected hardware: HardwareProfile(ram=32.0GB, cpu=16 cores, nvidia=True,
+  vram_total=[8.0], vram_free=[6.7], amd=False)
+Selected models: ['Qwen/Qwen3-1.7B']
+  weights: 3.4 GB (1.7B params, fp16)
+GPU budget: 6.20 GB (78% of 8.0 GB total, 6.7 GB free)
+Runtime allocation: weights 3.4 GB + overhead 1.0 GB + KV cache up to 1.8 GB
+Auto-tuned: --max-model-len 8192 --max-num-seqs 1 --gpu-memory-utilization 0.78
+```
+
+If no registered model fits, setup exits with a clean error and points
+you at [Provider Configuration](#provider-configuration) so you can use
+cloud inference instead.
+
+If you pass `--models <hf-id>` for a model **not** in the registry,
+RelayLM falls back to heuristic estimates (parameter count parsed from
+the name, FP16 assumed) and prints a warning. Auto-sizing will still
+work but may be conservative — `--max-model-len` lets you tune.
+
+### Advanced Tuning
+
+You should not normally need these flags. If auto-sizing failed (rare —
+report it) or you have a specific workload in mind, you can override:
+
+| Flag | When to reach for it | Example |
+|------|---------------------|---------|
+| `--max-model-len` | You want longer context than auto-tuning picked (e.g. for long-document tasks) and you have VRAM headroom | `relaylm setup --max-model-len 16384` |
+| `--max-num-seqs` | Multiple agents will hit the router concurrently and you want higher throughput | `relaylm setup --max-num-seqs 4` |
+| `--gpu-memory-util` | You've freed up VRAM since the last setup and want vLLM to grab more | `relaylm setup --gpu-memory-util 0.92` |
+
+Changing any of these tuning flags recreates the running container
+(RelayLM detects the configuration drift and stops + restarts vLLM with
+the new flags).
+
+### Hugging Face Token (optional)
+
+vLLM downloads model weights from the Hugging Face Hub. Anonymous downloads
+are rate-limited; setting a token enables faster, rate-limit-free downloads
+and access to gated models (e.g. some Llama and Mistral releases).
+
+1. **Create a Hugging Face account** at
+   [https://huggingface.co/join](https://huggingface.co/join).
+2. **Generate an access token**: open
+   [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens),
+   click "Create new token", choose the **Read** role (sufficient for
+   downloads), give it a name (e.g. `relaylm`), and copy the value — it
+   starts with `hf_`.
+3. **Set the `HF_TOKEN` environment variable** in the shell where you'll
+   run `relaylm setup`:
+
+   - **Linux / macOS / WSL2** (bash or zsh):
+
+     ```bash
+     export HF_TOKEN=hf_xxx...
+     # Persist across shells:
+     echo 'export HF_TOKEN=hf_xxx...' >> ~/.bashrc
+     ```
+
+   - **Windows PowerShell** (only relevant if you ever run RelayLM
+     natively on Windows — currently unsupported, see WSL2 above):
+
+     ```powershell
+     $env:HF_TOKEN = "hf_xxx..."
+     # Persist (new shells only):
+     setx HF_TOKEN "hf_xxx..."
+     ```
+
+   On WSL2, set the variable **inside the distro**, not in PowerShell —
+   `relaylm setup` runs inside WSL2, and PowerShell env vars do not
+   propagate unless `WSLENV` is configured.
+
+4. **Run `relaylm setup`** — the token is forwarded to the vLLM container
+   automatically. If you omit `--yes`, you will be prompted interactively
+   if the env var is not set.
+
+**Gated models**: for models behind a license agreement (e.g.
+`meta-llama/...`), visit the model's page on Hugging Face and accept the
+license while signed in. The token alone is not enough.
+
+**Security**: tokens grant read access to your Hugging Face account; treat
+them like passwords. The token is exposed in the container's environment
+(visible via `docker inspect`), so use a dedicated read-only token rather
+than your account's full-access one. Revoke at
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+if it leaks.
 
 ---
 
@@ -437,11 +556,37 @@ relaylm setup --port 8080
 **Possible causes**:
 
 - Insufficient disk space for model download
-- Insufficient RAM/VRAM for the selected model
 - Container runtime permission issues
+- Port already bound by a previous container
 
 **Solutions**:
 
 - Free up disk space
-- Use `--models` to select a smaller model
 - Run setup with `--runtime podman` or `--runtime docker` explicitly
+- Remove any stranded container holding port 8000:
+  `docker ps --filter "publish=8000"` then `docker rm -f <id>`
+
+### Container exits with "No available memory for the cache blocks"
+
+This means vLLM loaded the model but had no room left for the KV cache.
+First, make sure you're on the current version (auto-sizing computes
+both flags from your hardware now). If it still happens:
+
+- Free up VRAM (close GPU-heavy apps on the host) and re-run.
+- Try `relaylm setup --max-model-len 2048` to shrink the KV cache.
+
+### Setup Exits with "No local model fits"
+
+**Error**: `No local model fits your available VRAM (X GB free of Y GB
+total).`
+
+**Cause**: Your free VRAM is below the minimum any registered model
+needs at a usable context length.
+
+**Solutions**:
+
+- Free up VRAM on the host (close other GPU-using apps) and re-run.
+- Configure a cloud provider so requests are proxied to Anthropic or
+  OpenAI: `relaylm providers add anthropic --key sk-ant-...`.
+- If you know your card can handle a specific model, pass it explicitly:
+  `relaylm setup --models someone/Foo-7B` (heuristic sizing applies).

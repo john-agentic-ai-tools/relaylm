@@ -18,6 +18,7 @@ RelayLM auto-detects your hardware (RAM, CPU, GPU), selects appropriate models f
 - **Python 3.11** or later
 - **Podman** or **Docker** (container runtime)
 - **Windows users**: install inside a WSL2 distro — see [Running on Windows (WSL2)](docs/guide.md#windows-wsl2).
+- *(Optional)* Set `HF_TOKEN` for faster, rate-limit-free model downloads — see [Hugging Face Token](docs/guide.md#hugging-face-token-optional).
 
 ## Install
 
@@ -51,6 +52,9 @@ This will:
 4. Save configuration to `~/.config/relaylm/config.yml`
 
 After setup, your local AI router is available at `http://127.0.0.1:8000/v1`.
+
+On first run, RelayLM prints which model it selected and the memory
+breakdown it computed for vLLM — see [Auto-Sizing](docs/guide.md#auto-sizing).
 
 ## Next Steps
 

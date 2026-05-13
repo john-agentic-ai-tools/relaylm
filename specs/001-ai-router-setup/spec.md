@@ -134,7 +134,9 @@ what auto-detection would have selected.
 ### Edge Cases
 
 - What happens when the machine has insufficient RAM or VRAM for even the
-  smallest model? Tool should warn and suggest cloud-only mode.
+  smallest registered model? Resolved: setup exits with a clear "no local
+  model fits your available VRAM" message and points the user at
+  `relaylm providers add anthropic|openai` for cloud-only mode.
 - How does the system handle multiple GPU configurations (e.g., 2 GPUs with
   different VRAM)?
 - What happens if Docker daemon is installed but not running?
@@ -196,8 +198,15 @@ what auto-detection would have selected.
 - **Hardware Profile**: Detected system capabilities (RAM, CPU cores, GPU
   model/VRAM, container runtime availability).
 - **Model Selection**: List of models chosen for deployment, either
-  auto-detected from hardware or user-specified. Each model has name,
-  size, and resource requirements.
+  auto-selected from hardware or user-specified. Auto-selection is
+  **memory-aware** — it consults a curated registry of model
+  architectural numbers (parameter count, hidden size, layer count,
+  dtype) and the host's measured **free** GPU VRAM, picking the largest
+  registered model whose weights + activations + KV cache at a 2048-token
+  minimum context fit within a safety margin of available VRAM. vLLM
+  runtime flags (`--gpu-memory-utilization`, `--max-model-len`,
+  `--max-num-seqs`) are computed from the same inputs; users may
+  override them via CLI flags for advanced tuning.
 - **Configuration File**: Persistent YAML/TOML file storing all settings:
   models, providers, fallback order, container runtime preference.
   Timestamped backups kept in `~/.config/relaylm/backups/` before each
@@ -221,9 +230,11 @@ what auto-detection would have selected.
   2 minutes using CLI commands.
 - **SC-004**: 90% of developers with Claude Code or OpenCode installed have
   their agent auto-configured to use the local router on first setup.
-- **SC-005**: All error conditions (missing runtime, insufficient RAM, invalid
-  model) produce actionable error messages that let the developer resolve the
-  issue without external documentation.
+- **SC-005**: All error conditions (missing runtime, insufficient RAM,
+  invalid model, no local model fits the available VRAM) produce
+  actionable error messages that let the developer resolve the issue
+  without external documentation. The "no model fits" case explicitly
+  surfaces the cloud-provider fallback command.
 
 ## Out of Scope
 

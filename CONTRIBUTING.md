@@ -71,6 +71,36 @@ ruff format src/ tests/
 mypy src/
 ```
 
+## Adding a Model to the Registry
+
+The curated model catalog at `src/relaylm/models/registry.py` drives
+auto-sizing — RelayLM uses each entry's architectural numbers to compute
+the right vLLM memory flags for the user's hardware.
+
+To add a new model:
+
+1. **Find the upstream `config.json`** on the model's Hugging Face page
+   (e.g.
+   [Qwen3-1.7B/config.json](https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/config.json)).
+2. **Read these fields**:
+   - `hidden_size` → `hidden_size`
+   - `num_hidden_layers` → `num_layers`
+   - Parameter count → `params_b` (usually in the model name; check the
+     model card if uncertain).
+   - Default dtype → `dtype` (`fp16` for most chat models; `bf16` for
+     some Llama/Qwen variants).
+3. **Append a `ModelSpec(...)`** to the `REGISTRY` tuple. Ordering
+   doesn't matter for correctness, but keep entries grouped by family
+   for readability.
+4. **Add a smoke test** in `tests/unit/test_model_registry.py` (the
+   `TestRegistryEntries` class already validates that every entry has
+   realistic numbers — a new entry will be covered automatically).
+5. **Run `pytest tests/unit/test_model_registry.py -v`** to confirm.
+
+The heuristic fallback (`heuristic_spec`) handles unknown models for
+users, but adding an entry to the registry gives accurate sizing — well
+worth it for any model you expect users to run regularly.
+
 ## Coding Standards
 
 - **PEP 8**: Follow Python's style guide

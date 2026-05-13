@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "relaylm"
-version = "0.2.0"
+version = "0.3.0"
 description = "Single-command AI router environment bootstrap"
 requires-python = ">=3.11"
 license = "MIT"
