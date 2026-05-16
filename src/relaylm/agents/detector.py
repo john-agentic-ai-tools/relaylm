@@ -34,17 +34,72 @@ def _wslpath_to_unix(win_path: str) -> Path | None:
     return Path(converted) if converted else None
 
 
+def _wslpath_to_windows(unix_path: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["wslpath", "-w", unix_path],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
 _VERSION_RE = re.compile(r"\d+\.\d+(?:\.\d+)?(?:[-+][\w.\-]+)?")
+
+
+def _version_invocation(executable: str) -> list[str] | None:
+    """Return argv for ``<executable> --version``.
+
+    Windows batch shims (``.cmd``/``.bat``) can't be exec'd directly from
+    inside WSL2; route them through ``cmd.exe`` with a translated Windows
+    path. Returns ``None`` when no viable invocation could be built.
+    """
+    p = Path(executable)
+    if is_wsl2() and p.suffix.lower() in {".cmd", ".bat"}:
+        win_path = _wslpath_to_windows(executable)
+        if win_path is None:
+            return None
+        return ["cmd.exe", "/c", win_path, "--version"]
+    return [executable, "--version"]
 
 
 @functools.lru_cache(maxsize=8)
 def _executable_version(executable: str) -> str | None:
+    argv = _version_invocation(executable)
+    if argv is None:
+        return None
     try:
         result = subprocess.run(
-            [executable, "--version"],
+            argv,
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = f"{result.stdout or ''} {result.stderr or ''}".strip()
+    match = _VERSION_RE.search(text)
+    return match.group(0) if match else None
+
+
+@functools.lru_cache(maxsize=8)
+def _windows_native_version(bin_name: str) -> str | None:
+    """WSL2-only fallback: let Windows resolve ``bin_name`` via its own PATH
+    and run ``--version`` through ``cmd.exe``. Catches native-installer
+    placements that wouldn't appear under ``%APPDATA%\\npm``.
+    """
+    if not is_wsl2():
+        return None
+    try:
+        result = subprocess.run(
+            ["cmd.exe", "/c", f"{bin_name} --version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -73,7 +128,7 @@ def _agent_version(bin_name: str, install_path: str | None) -> str | None:
                 v = _executable_version(str(cand))
                 if v:
                     return v
-    return None
+    return _windows_native_version(bin_name)
 
 
 def _wsl2_windows_home() -> Path | None:

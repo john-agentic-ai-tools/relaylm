@@ -26,6 +26,9 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "relaylm.agents.detector._executable_version", lambda _: None
     )
+    monkeypatch.setattr(
+        "relaylm.agents.detector._windows_native_version", lambda _: None
+    )
 
 
 class TestAutoconfigCli:

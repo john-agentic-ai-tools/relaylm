@@ -16,6 +16,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(detector.shutil, "which", lambda _: None)
     monkeypatch.setattr(detector, "is_wsl2", lambda: False)
     monkeypatch.setattr(detector, "_executable_version", lambda _: None)
+    monkeypatch.setattr(detector, "_windows_native_version", lambda _: None)
 
 
 class TestOpencodeConfigCandidates:

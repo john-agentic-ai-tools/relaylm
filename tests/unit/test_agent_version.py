@@ -9,8 +9,10 @@ from relaylm.agents.detector import _agent_version, _executable_version
 @pytest.fixture(autouse=True)
 def _clear_version_cache():
     _executable_version.cache_clear()
+    detector._windows_native_version.cache_clear()
     yield
     _executable_version.cache_clear()
+    detector._windows_native_version.cache_clear()
 
 
 def _stub_subprocess(stdout: str = "", stderr: str = "", raises=None):
@@ -22,6 +24,41 @@ def _stub_subprocess(stdout: str = "", stderr: str = "", raises=None):
         )
 
     return run
+
+
+class TestVersionInvocation:
+    def test_plain_argv_on_non_wsl2(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: False)
+        argv = detector._version_invocation("/usr/bin/claude")
+        assert argv == ["/usr/bin/claude", "--version"]
+
+    def test_plain_argv_for_exe_on_wsl2(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        argv = detector._version_invocation("/mnt/c/Windows/System32/where.exe")
+        assert argv == ["/mnt/c/Windows/System32/where.exe", "--version"]
+
+    def test_wraps_cmd_through_cmd_exe_on_wsl2(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        monkeypatch.setattr(
+            detector,
+            "_wslpath_to_windows",
+            lambda p: r"C:\Users\Admin\AppData\Roaming\npm\opencode.cmd",
+        )
+        argv = detector._version_invocation(
+            "/mnt/c/Users/Admin/AppData/Roaming/npm/opencode.cmd"
+        )
+        assert argv == [
+            "cmd.exe",
+            "/c",
+            r"C:\Users\Admin\AppData\Roaming\npm\opencode.cmd",
+            "--version",
+        ]
+
+    def test_returns_none_when_wslpath_fails(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        monkeypatch.setattr(detector, "_wslpath_to_windows", lambda _: None)
+        argv = detector._version_invocation("/mnt/c/foo/opencode.cmd")
+        assert argv is None
 
 
 class TestExecutableVersion:
@@ -137,6 +174,55 @@ class TestAgentVersion:
 
     def test_returns_none_when_nothing_resolves(self, monkeypatch):
         monkeypatch.setattr(detector, "_executable_version", lambda _: None)
+        monkeypatch.setattr(detector, "_windows_native_version", lambda _: None)
         monkeypatch.setattr(detector.shutil, "which", lambda _: None)
         monkeypatch.setattr(detector, "_wsl2_windows_home", lambda: None)
         assert _agent_version("claude", None) is None
+
+    def test_falls_back_to_windows_native_when_npm_globals_empty(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(detector, "_executable_version", lambda _: None)
+        monkeypatch.setattr(detector.shutil, "which", lambda _: None)
+        win_home = tmp_path / "mnt" / "c" / "Users" / "alice"
+        win_home.mkdir(parents=True)
+        monkeypatch.setattr(detector, "_wsl2_windows_home", lambda: win_home)
+        monkeypatch.setattr(
+            detector,
+            "_windows_native_version",
+            lambda name: "2.1.142" if name == "claude" else None,
+        )
+        assert _agent_version("claude", None) == "2.1.142"
+
+
+class TestWindowsNativeVersion:
+    def test_returns_none_on_non_wsl2(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: False)
+        assert detector._windows_native_version("claude") is None
+
+    def test_parses_version_from_cmd_exe(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        monkeypatch.setattr(
+            detector.subprocess,
+            "run",
+            _stub_subprocess(stdout="Claude Code 2.1.142\n"),
+        )
+        assert detector._windows_native_version("claude") == "2.1.142"
+
+    def test_returns_none_on_subprocess_failure(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        monkeypatch.setattr(
+            detector.subprocess,
+            "run",
+            _stub_subprocess(raises=FileNotFoundError("cmd.exe")),
+        )
+        assert detector._windows_native_version("claude") is None
+
+    def test_returns_none_when_no_version_token(self, monkeypatch):
+        monkeypatch.setattr(detector, "is_wsl2", lambda: True)
+        monkeypatch.setattr(
+            detector.subprocess,
+            "run",
+            _stub_subprocess(stdout="'claude' is not recognized\n"),
+        )
+        assert detector._windows_native_version("claude") is None

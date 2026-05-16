@@ -19,6 +19,7 @@ def linux_home(tmp_path, monkeypatch):
     monkeypatch.setattr(detector.shutil, "which", lambda _: None)
     monkeypatch.setattr(detector.sys, "platform", "linux")
     monkeypatch.setattr(detector, "_executable_version", lambda _: None)
+    monkeypatch.setattr(detector, "_windows_native_version", lambda _: None)
     monkeypatch.delenv("APPDATA", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return linux_home
