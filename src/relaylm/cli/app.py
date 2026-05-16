@@ -6,11 +6,34 @@ from typing import Any
 
 import typer
 
+
+def _version_callback(value: bool) -> None:
+    if value:
+        from relaylm._buildinfo import version_string
+
+        typer.echo(version_string())
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="relaylm",
     help="Single-command AI router environment bootstrap",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def _main(
+    version: bool = typer.Option(
+        False,
+        "-v",
+        "--version",
+        help="Show version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    pass
 
 
 _PROGRESS_THROTTLE_SECONDS = 5.0
@@ -298,9 +321,10 @@ def setup(
         f"(took {ready_elapsed // 60}m{ready_elapsed % 60:02d}s)"
     )
 
-    from relaylm.agents.detector import detect_and_configure_agents
+    from relaylm.agents.detector import run_autoconfig
 
-    detect_and_configure_agents(manager.endpoint_url)
+    autoconfig_result = run_autoconfig()
+    typer.echo(autoconfig_result.summary)
 
     create_backup()
     config = load_config()
@@ -435,17 +459,91 @@ def restore(
 
 
 @app.command()
-def agents(
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Show what would be changed without writing"
-    ),
-    yes: bool = typer.Option(False, "--yes", help="Apply changes without confirmation"),
-) -> None:
-    """Detect and configure coding agents."""
-    from relaylm.agents.detector import detect_and_configure_agents
+def info() -> None:
+    """Print runtime/build info — version, package location, git SHA, platform."""
+    from relaylm._buildinfo import runtime_info
 
-    endpoint = "http://127.0.0.1:8000/v1"
-    detect_and_configure_agents(endpoint, dry_run=dry_run)
+    rt = runtime_info()
+    width = max(len(k) for k in rt)
+    for key, val in rt.items():
+        typer.echo(f"  {key:<{width}}  {val}")
+
+
+autoconfig_app = typer.Typer(
+    help="Auto-detect and configure supported coding agents (OpenCode, Claude Code)."
+)
+app.add_typer(autoconfig_app, name="autoconfig")
+
+
+@autoconfig_app.callback(invoke_without_command=True)
+def autoconfig(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Scan and report what would change without writing"
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "--non-interactive",
+        help="Skip confirmation prompt, apply changes immediately",
+    ),
+) -> None:
+    from relaylm.agents.detector import run_autoconfig
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    try:
+        if dry_run:
+            result = run_autoconfig(dry_run=True)
+            typer.echo(result.summary)
+            return
+
+        if not yes:
+            preview = run_autoconfig(dry_run=True)
+            typer.echo(preview.summary)
+
+            if not any(a.detected for a in preview.agents):
+                return
+
+            if not sys.stdin.isatty():
+                typer.echo(
+                    "\nRefusing to apply changes without confirmation. "
+                    "Re-run with --yes to skip the prompt.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
+            if not typer.confirm("\nApply these changes?", default=True):
+                typer.echo("Aborted. No changes made.")
+                return
+
+        result = run_autoconfig()
+        typer.echo(result.summary)
+
+    except PermissionError:
+        typer.echo(
+            "Error: Could not write config. "
+            "Check write permissions on ~/.config/relaylm/",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        typer.echo(f"Error during autoconfig: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@autoconfig_app.command()
+def revert() -> None:
+    """Restore relaylm config from the most recent autoconfig backup."""
+    from relaylm.agents.detector import revert_autoconfig
+
+    result = revert_autoconfig()
+    if result.success:
+        typer.echo(result.message)
+        return
+    typer.echo(result.message, err=True)
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

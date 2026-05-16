@@ -1,5 +1,8 @@
 <!-- SPECKIT START -->
-Current plan: specs/003-ci-cd-pipeline/plan.md
-Additional context: specs/003-ci-cd-pipeline/research.md, specs/003-ci-cd-pipeline/data-model.md,
-specs/003-ci-cd-pipeline/quickstart.md, specs/003-ci-cd-pipeline/contracts/
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read:
+- specs/004-cli-autoconfig/plan.md       (current implementation plan)
+- specs/004-cli-autoconfig/research.md   (technical research decisions)
+- specs/004-cli-autoconfig/data-model.md (entity definitions)
+- specs/004-cli-autoconfig/contracts/    (CLI interface contracts)
 <!-- SPECKIT END -->
