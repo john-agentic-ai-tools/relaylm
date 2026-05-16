@@ -18,7 +18,9 @@ def _stub_git(sha: str | None, dirty: bool, raises=None):
             raise raises
         sub = argv[3]  # ["git", "-C", "<dir>", "<subcmd>", ...]
         if sub == "rev-parse":
-            return subprocess.CompletedProcess(argv, 0, stdout=(sha or "") + "\n", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=(sha or "") + "\n", stderr=""
+            )
         if sub == "status":
             return subprocess.CompletedProcess(
                 argv, 0, stdout=" M foo.py\n" if dirty else "", stderr=""
