@@ -409,36 +409,40 @@ When configured, the router uses the local vLLM instance as the primary inferenc
 
 ## Agent Configuration
 
-RelayLM can auto-detect and configure coding agents to use the local router as their inference endpoint.
+RelayLM detects supported coding agents on your machine and records them in its own config so the router can route requests to or from them. It does **not** modify the agents' own config files — you wire each agent at the local router endpoint yourself.
 
-### Claude Code
-
-If you have Claude Code installed (`~/.claude/settings.json` exists), running:
+### Autoconfig
 
 ```bash
-relaylm agents
+relaylm autoconfig
 ```
 
-will update your Claude configuration to point at the local router:
+This scans for Claude Code (`~/.claude/settings.json` or `claude` on PATH) and OpenCode (`~/.config/opencode/opencode.json` or `opencode` on PATH), creates a timestamped backup of `~/.config/relaylm/config.yml`, and writes an `agents.<name>` entry for each detected agent. The summary shows what was detected, what was written, and where the backup lives.
 
-```json
-{
-  "apiProvider": "anthropic",
-  "customApiUrl": "http://127.0.0.1:8000/v1"
-}
-```
+If no supported agents are detected, the command lists Claude Code and OpenCode as the currently supported tools and exits without changing anything.
 
-### OpenCode
+### Pointing your agent at the local router
 
-If you have OpenCode installed (`~/.config/opencode/opencode.json` exists), RelayLM will configure it to use the local endpoint as its model.
+After autoconfig, point each agent at the router endpoint printed by `relaylm setup` (default `http://127.0.0.1:8000/v1`):
 
-### Dry Run
+- **Claude Code** — set `customApiUrl` in `~/.claude/settings.json` to the router URL.
+- **OpenCode** — set the model endpoint in `~/.config/opencode/opencode.json` to `<router-url>/chat/completions`.
 
-To see what would be changed without writing:
+### Dry run
 
 ```bash
-relaylm agents --dry-run
+relaylm autoconfig --dry-run
 ```
+
+Reports what would change without writing.
+
+### Revert
+
+```bash
+relaylm autoconfig revert
+```
+
+Restores `~/.config/relaylm/config.yml` from the most recent autoconfig backup.
 
 ---
 

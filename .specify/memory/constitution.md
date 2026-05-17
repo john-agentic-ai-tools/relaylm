@@ -74,11 +74,17 @@ service communication.
 
 ## Development Workflow
 
-All development MUST start from a feature branch. Commits MUST be granular and
-atomic. Tests MUST pass on CI before merge. Pull requests MUST include test
-evidence (test output showing Red before implementation, Green after). The
-Constitution Check in the implementation plan MUST be evaluated at both the
-start and end of the design phase.
+All development MUST start from a feature branch. The first phase of every new
+feature branch MUST be to update all project dependencies to their latest
+compatible versions and address all known security vulnerabilities (using
+`pip-audit`, `npm audit`, or equivalent tooling for the stack). Phase 1 is
+complete only when all actionable vulnerabilities are resolved or documented
+with a rationale for deferral.
+
+Commits MUST be granular and atomic. Tests MUST pass on CI before merge. Pull
+requests MUST include test evidence (test output showing Red before
+implementation, Green after). The Constitution Check in the implementation plan
+MUST be evaluated at both the start and end of the design phase.
 
 ## Governance
 

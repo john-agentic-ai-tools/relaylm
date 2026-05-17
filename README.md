@@ -70,7 +70,8 @@ breakdown it computed for vLLM — see [Auto-Sizing](docs/guide.md#auto-sizing).
 | `relaylm setup` | Bootstrap the local AI routing environment |
 | `relaylm providers add` | Configure an external AI provider |
 | `relaylm providers list-cmd` | List configured providers |
-| `relaylm agents` | Detect and configure coding agents |
+| `relaylm autoconfig` | Detect coding agents and record them in RelayLM's config |
+| `relaylm autoconfig revert` | Restore the previous config from the most recent backup |
 | `relaylm config show` | Print current configuration |
 | `relaylm config path` | Print configuration file path |
 | `relaylm config restore` | Restore configuration from a backup |

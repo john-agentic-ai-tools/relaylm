@@ -6,14 +6,29 @@ from relaylm.config.loader import CONFIG_DIR, CONFIG_PATH
 BACKUP_DIR = CONFIG_DIR / "backups"
 
 
+def _unique_path(base: Path) -> Path:
+    if not base.exists():
+        return base
+    stem = base.stem
+    suffix_num = 1
+    while True:
+        candidate = base.with_name(f"{stem}_{suffix_num:03d}{base.suffix}")
+        if not candidate.exists():
+            return candidate
+        suffix_num += 1
+
+
 def create_backup() -> Path | None:
     if not CONFIG_PATH.exists():
         return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    backup_path = BACKUP_DIR / f"config-{timestamp}.yml"
+    backup_path = _unique_path(BACKUP_DIR / f"config-{timestamp}.yml")
     content = CONFIG_PATH.read_bytes()
-    backup_path.write_bytes(content)
+    try:
+        backup_path.write_bytes(content)
+    except PermissionError:
+        return None
     return backup_path
 
 
